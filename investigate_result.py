@@ -16,25 +16,27 @@ from src.other_implemenations.reference_implementation import attention_ref
 batch_size = 4
 num_heads = 9
 
-seqlen_q = 97
-seqlen_k = 97
+seqlen_q = 1
+seqlen_k = 239
+swap_seqlens = True
+use_attention = False
 
-head_dim = 64
-attention = False
-
-causal = False
+head_dim = 32
+causal = True
 dtype = torch.float16
 
-forward_only = False
+forward_only = True
 
 
 if __name__ == "__main__":
-    if attention:
+    if use_attention:
         assert seqlen_q == seqlen_k
+    if swap_seqlens:
+        seqlen_q, seqlen_k = seqlen_k, seqlen_q
 
     # Prepare data
     q, k, v, do = generate_test_data(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, dtype)
-    attn_mask = generate_attention_mask(q, True) if attention else None
+    attn_mask = generate_attention_mask(q, True) if use_attention else None
 
     # Compute reference
     out_ref = attention_ref(q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, causal=causal)

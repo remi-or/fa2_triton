@@ -82,14 +82,13 @@ def _fwd_kernel(
         return
     
     fully_masked_lines = actual_seqlen_q - actual_seqlen_k if IS_CAUSAL else 0
-    if fully_masked_lines > start_m * BLOCK_M:
+    if fully_masked_lines >= (start_m+1) * BLOCK_M:
         return
 
     # Check if we can load a whole block of Q or we need boundary checks
     pad_rows = not EVEN_M
     if VARLEN:
         pad_rows = pad_rows or (actual_seqlen_q - start_m) < BLOCK_M
-    # TODO: add an exit point in case of a fully masked block (nans_line = BLOCK_M) (might already be the case)
         
     # Initialize pointers to Q, K, V # TODO: check if this uses int32 or int64 math (check FA repo)
     offseted_Q = Q + off_batch * stride_qb + off_head * stride_qh + cu_seq_start_q * stride_qm
@@ -139,9 +138,11 @@ def _fwd_kernel(
     #     start_n = ((i_n + start_m) % (end_n // BLOCK_N)) * BLOCK_N
     for start_n in range(0, end_n, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
+        last_block = (start_n + BLOCK_N >= end_n)
 
         # Check if we can load a whole block of K 
         pad_cols = not EVEN_N or (VARLEN and ((actual_seqlen_k - start_n) < BLOCK_N))
+
         # Load K (same mechanism as for Q, only check cols instead of rows)
         offset_k_ptrs = k_ptrs + start_n * stride_kn
         if pad_cols and HEADS_NOT_PADDED:
@@ -162,10 +163,22 @@ def _fwd_kernel(
         qk += tl.dot(q, tl.trans(k))
 
         # Apply attention masking and/or account for padding of the keys
+        # offs_n_causal =  tl.arange(0, BLOCK_N) + (start_n - actual_seqlen_k + actual_seqlen_q)
+        # if pad_cols and (IS_CAUSAL and last_block):  
+        #     mask = tl.maximum(actual_seqlen_q - 1, offs_m[:, None]) >= (offs_n_causal)[None, :]
+        #     qk = tl.where(mask, float("-inf"), qk)
+        # elif (IS_CAUSAL and last_block):
+        #     mask = (offs_m[:, None] >= offs_n_causal[None, :])
+        #     qk = tl.where(mask, float("-inf"), qk)
+        # elif pad_cols:
+        #     mask = ((start_n + offs_n)[None, :] < actual_seqlen_k)
+        #     qk = tl.where(mask, float("-inf"), qk)
+
+        # Apply attention masking and/or account for padding of the keys
         if pad_cols:  
             qk += tl.where((start_n + offs_n)[None, :] < actual_seqlen_k, 0, float("-inf"))
         # Apply causal mask
-        if IS_CAUSAL:
+        if IS_CAUSAL and last_block:
             causal_mask = offs_m[:, None] >= (start_n + offs_n - actual_seqlen_k + actual_seqlen_q)[None, :]
             qk += tl.where(causal_mask, 0, float("-inf"))
 

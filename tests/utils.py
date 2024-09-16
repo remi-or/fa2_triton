@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from typing import Tuple
+from typing import Tuple, Optional
 
 def generate_test_data(
     batch_size: int,
@@ -56,16 +56,18 @@ def compare_results_fa(
     q: Tensor,
     k: Tensor,
     v: Tensor,
-    g: Tensor,
+    do: Optional[Tensor],
     out: Tensor,
     out_ref: Tensor,
     out_pt: Tensor,
     out_error_mul: int = 2,
-    grad_error_mul: int = 3, # 2 or 3
+    grad_error_mul: int = 3, # 2 or 3 
     grad_error_bias: float = 1e-5, # 0 or 1e-5
-) -> Tuple[Tensor, ...]:
+) -> Tuple[Optional[Tensor], ...]:
     """This code is a slightly modified version of the one from the original FlashAttention repo: 
         https://github.com/Dao-AILab/flash-attention/blob/main/tests/test_flash_attn.py """
+    
+    # Display output-related diffs
     print(f"Output max diff: {(out - out_ref).abs().max().item()}")
     print(f"Output mean diff: {(out - out_ref).abs().mean().item()}")
     print(f"Pytorch max diff: {(out_pt - out_ref).abs().max().item()}")
@@ -73,10 +75,17 @@ def compare_results_fa(
     # if dropout_p > 0.0:
     #     print(f"Attention max diff: {(attn - attn_ref).abs().max().item()}")
     #     print(f"Attention Pytorch max diff: {(attn_pt - attn_ref).abs().max().item()}")
+    # Fail test if diffs are to high
+    assert (out - out_ref).abs().max().item() <= out_error_mul * (out_pt - out_ref).abs().max().item(), "Output"
 
-    dq, dk, dv = torch.autograd.grad(out, (q, k, v), g)
-    dq_ref, dk_ref, dv_ref = torch.autograd.grad(out_ref, (q, k, v), g)
-    dq_pt, dk_pt, dv_pt = torch.autograd.grad(out_pt, (q, k, v), g)
+    # Stop here if this is forward only mode
+    forward_only_mode = (do is None)
+    if forward_only_mode:
+        return None, None, None
+
+    dq, dk, dv = torch.autograd.grad(out, (q, k, v), do)
+    dq_ref, dk_ref, dv_ref = torch.autograd.grad(out_ref, (q, k, v), do)
+    dq_pt, dk_pt, dv_pt = torch.autograd.grad(out_pt, (q, k, v), do)
     print(f"dQ max diff: {(dq - dq_ref).abs().max().item()}")
     print(f"dK max diff: {(dk - dk_ref).abs().max().item()}")
     print(f"dV max diff: {(dv - dv_ref).abs().max().item()}")
@@ -92,7 +101,6 @@ def compare_results_fa(
 
     # Check that FlashAttention's numerical error is at most twice the numerical error
     # of a Pytorch implementation.
-    assert (out - out_ref).abs().max().item() <= out_error_mul * (out_pt - out_ref).abs().max().item(), "Output"
 
     # if dropout_p > 0.0:
         # assert (attn - attn_ref).abs().max().item() <= 2 * (attn_pt - attn_ref).abs().max().item()
