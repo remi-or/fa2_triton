@@ -1,11 +1,13 @@
+
 import sys
-sys.path.append("/home/remi_ouazan/fa2")
+import os.path as osp
+sys.path.append(osp.dirname(osp.dirname(__file__)))
+
 import torch
-import pytest
 import math
 from einops import repeat
 
-from src.kernel_wrapper import lse_func
+from src.wrapper import lse_func
 from tests.utils import generate_test_data, generate_attention_mask, compare_tensors
 
 

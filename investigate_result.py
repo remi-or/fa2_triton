@@ -9,7 +9,7 @@ import sys
 root = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(root)
 
-from src.kernel_wrapper import flash_attn_func
+from src.wrapper import flash_attn_func
 from tests.utils import generate_test_data, start_and_end, generate_attention_mask, compare_results_fa, compare_tensors
 from src.other_implemenations.reference_implementation import attention_ref
 
@@ -21,8 +21,8 @@ seqlen_k = 239
 swap_seqlens = True
 use_attention = False
 
-head_dim = 32
-causal = True
+head_dim = 111
+causal = False
 dtype = torch.float16
 
 forward_only = True
@@ -53,13 +53,13 @@ if __name__ == "__main__":
         print("Ref:", start_and_end(out_ref, 3))
         print("Pt:", start_and_end(out_pt, 3))
 
+        compare_results_fa(q, k, v, None, out, out_ref, out_pt)
+        
         out, out_pt, out_ref = [x.flatten(start_dim=1, end_dim=2) for x in (out, out_pt, out_ref)]
 
         # Save a glimpse of the results
         fig, axs = plt.subplots(1, 3)
         for i, x in enumerate([out, out_pt, out_ref]):
-            axs[i].imshow(x[-1].numpy(force=True))
-            axs[i].imshow(x[-1].numpy(force=True))
             axs[i].imshow(x[-1].numpy(force=True))
         fig.savefig("__tmp__.png")
 

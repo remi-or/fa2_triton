@@ -11,8 +11,8 @@ import sys
 root = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(root)
 
-from src.kernel_wrapper import flash_attn_func
-from src.kernel_callers import DEBUG_DELTA
+from src.wrapper import flash_attn_func
+from src.backward.caller import DEBUG_DELTA
 from tests.utils import generate_test_data, generate_attention_mask, compare_tensors
 from other_implemenations.reference_implementation import attention_ref
 

@@ -7,7 +7,7 @@ sys.path.append(osp.dirname(osp.dirname(__file__)))
 import torch
 import pytest
 
-from src.kernel_wrapper import flash_attn_func
+from src.wrapper import flash_attn_func
 from tests.utils import generate_test_data, compare_results_fa, generate_attention_mask
 from src.other_implemenations.reference_implementation import attention_ref
 
