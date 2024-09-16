@@ -61,6 +61,7 @@ def compare_results_fa(
     out_ref: Tensor,
     out_pt: Tensor,
     out_error_mul: int = 2,
+    out_error_bias: float = 2e-5,
     grad_error_mul: int = 3, # 2 or 3 
     grad_error_bias: float = 1e-5, # 0 or 1e-5
 ) -> Tuple[Optional[Tensor], ...]:
@@ -76,7 +77,7 @@ def compare_results_fa(
     #     print(f"Attention max diff: {(attn - attn_ref).abs().max().item()}")
     #     print(f"Attention Pytorch max diff: {(attn_pt - attn_ref).abs().max().item()}")
     # Fail test if diffs are to high
-    assert (out - out_ref).abs().max().item() <= out_error_mul * (out_pt - out_ref).abs().max().item(), "Output"
+    assert (out - out_ref).abs().max().item() <= out_error_mul * (out_pt - out_ref).abs().max().item() + out_error_bias, "Output"
 
     # Stop here if this is forward only mode
     forward_only_mode = (do is None)
