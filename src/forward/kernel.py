@@ -5,7 +5,27 @@ import triton.language as tl
 # TODO: check if using exp2 instead of exp leads to better results / times
 # TODO: can we initialize accO to empty instead of 0? 
 
-# @triton.autotune(
+@triton.jit
+def load_fn(
+    ptrs, 
+    offs_axis_0: tl.const_pointer_type,
+    offs_axis_1: tl.const_pointer_type,
+    PAD_AXIS_0: tl.constexpr,
+    PAD_AXIS_1: tl.constexpr,
+    LIM_AXIS_0: tl.constexpr,
+    LIM_AXIS_1: tl.constexpr,
+):
+    if PAD_AXIS_0 and not PAD_AXIS_1: # rows only are padded
+        x = tl.load(ptrs, mask=offs_axis_0[:, None] < LIM_AXIS_0, other=0.0)
+    elif PAD_AXIS_0: # rows and heads are padded 
+        x = tl.load(ptrs, mask=(offs_axis_0[:, None] < LIM_AXIS_0) & (offs_axis_1[None, :] < LIM_AXIS_1), other=0.0)
+    elif not PAD_AXIS_1: # nothing is padded
+        x = tl.load(ptrs)
+    else: # only heads are padded
+        x = tl.load(ptrs, mask=offs_axis_1[None, :] < LIM_AXIS_1, other=0.0)
+    return x
+
+# @triton.autotune( TODO: re-establish that using the cache args
 #     configs=[
 #         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=1, num_stages=1),
 #         triton.Config({"BLOCK_M": 128, "BLOCK_N": 256}, num_warps=1, num_stages=1),
@@ -15,9 +35,9 @@ import triton.language as tl
 # )
 @triton.heuristics(
     {
-        "EVEN_M": lambda args: args["seqlen_q"] % args["BLOCK_M"] == 0,
-        "EVEN_N": lambda args: args["seqlen_k"] % args["BLOCK_N"] == 0,
-        "HEADS_NOT_PADDED": lambda args: args["headdim"] == args["BLOCK_HEADDIM"], # TODO: replace w/ HEADS_ARE_PADDED
+        # "EVEN_M": lambda args: args["seqlen_q"] % args["BLOCK_M"] == 0,
+        # "EVEN_N": lambda args: args["seqlen_k"] % args["BLOCK_N"] == 0,
+        "PADDED_HEADS": lambda args: True # args["headdim"] != args["BLOCK_HEADDIM"], TODO: fix this
     }
 )
 @triton.jit
@@ -46,12 +66,13 @@ def _fwd_kernel(
     BIAS_TYPE: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
-    EVEN_M: tl.constexpr,
-    EVEN_N: tl.constexpr,
-    HEADS_NOT_PADDED: tl.constexpr,
+    # EVEN_M: tl.constexpr,
+    # EVEN_N: tl.constexpr,
+    PADDED_HEADS: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
+    
     softmax_scale = softmax_scale * 1.44269504089
     # Locate kernel inside the grid
     start_m = tl.program_id(0) # current block in the Q matrix
@@ -86,9 +107,11 @@ def _fwd_kernel(
         return
 
     # Check if we can load a whole block of Q or we need boundary checks
-    pad_rows = not EVEN_M
+    pad_rows = (start_m + 1) * BLOCK_M > actual_seqlen_q  # (actual_seqlen_q % BLOCK_M != 0)
+    # print("pad_rows", pad_rows)
+    # return
     if VARLEN:
-        pad_rows = pad_rows or (actual_seqlen_q - start_m) < BLOCK_M
+        pad_rows = pad_rows or ((actual_seqlen_q - start_m) < BLOCK_M)
         
     # Initialize pointers to Q, K, V # TODO: check if this uses int32 or int64 math (check FA repo)
     offseted_Q = Q + off_batch * stride_qb + off_head * stride_qh + cu_seq_start_q * stride_qm
@@ -115,14 +138,7 @@ def _fwd_kernel(
     acc_o = tl.zeros([BLOCK_M, BLOCK_HEADDIM], dtype=tl.float32)
 
     # Load Q, which will stay in SRAM for the whole loop
-    if pad_rows and HEADS_NOT_PADDED: # rows only are padded
-        q = tl.load(q_ptrs, mask=offs_m[:, None] < actual_seqlen_q, other=0.0)
-    elif pad_rows: # rows and heads are padded 
-        q = tl.load(q_ptrs, mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim), other=0.0)
-    elif HEADS_NOT_PADDED: # nothing is padded
-        q = tl.load(q_ptrs)
-    else: # only heads are padded
-        q = tl.load(q_ptrs, mask=offs_d[None, :] < headdim, other=0.0)
+    q = load_fn(q_ptrs, offs_m, offs_d, PADDED_HEADS, PADDED_HEADS, actual_seqlen_q, headdim) # TODO: find fix
 
     # Compute last visited column of KV which 
     if IS_CAUSAL:
@@ -136,27 +152,31 @@ def _fwd_kernel(
     # loop over k, v and update accumulator
     # for i_n in range(0, end_n // BLOCK_N): 
     #     start_n = ((i_n + start_m) % (end_n // BLOCK_N)) * BLOCK_N
-    for start_n in range(0, end_n, BLOCK_N):
+    for start_n in tl.range(0, end_n, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
         last_block = (start_n + BLOCK_N >= end_n)
 
-        # Check if we can load a whole block of K 
-        pad_cols = not EVEN_N or (VARLEN and ((actual_seqlen_k - start_n) < BLOCK_N))
+        # Check if we can load a whole block of K
+        if actual_seqlen_k % BLOCK_N == 0:
+            pad_cols = ((actual_seqlen_k - start_n) < BLOCK_N) and last_block
+        else:
+            pad_cols = last_block
+        pad_cols = True # TODO: fid fix
 
         # Load K (same mechanism as for Q, only check cols instead of rows)
         offset_k_ptrs = k_ptrs + start_n * stride_kn
-        if pad_cols and HEADS_NOT_PADDED:
-            k = tl.load(offset_k_ptrs, mask=(start_n + offs_n)[:, None] < actual_seqlen_k, other=0.0) 
-        elif pad_cols:
+        if pad_cols and PADDED_HEADS:
             k = tl.load(
                 offset_k_ptrs, 
                 mask=((start_n + offs_n)[:, None] < actual_seqlen_k) & (offs_d[None, :] < headdim), 
                 other=0.0,
             )
-        elif HEADS_NOT_PADDED:
-            k = tl.load(offset_k_ptrs)
-        else:
+        elif pad_cols:
+            k = tl.load(offset_k_ptrs, mask=(start_n + offs_n)[:, None] < actual_seqlen_k, other=0.0) 
+        elif PADDED_HEADS:
             k = tl.load(offset_k_ptrs, mask=offs_d[None, :] < headdim, other=0.0)
+        else:
+            k = tl.load(offset_k_ptrs)
 
         # Compute QK
         qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
@@ -178,39 +198,39 @@ def _fwd_kernel(
         if pad_cols:  
             qk += tl.where((start_n + offs_n)[None, :] < actual_seqlen_k, 0, float("-inf"))
         # Apply causal mask
-        if IS_CAUSAL and last_block:
+        if IS_CAUSAL:
             causal_mask = offs_m[:, None] >= (start_n + offs_n - actual_seqlen_k + actual_seqlen_q)[None, :]
             qk += tl.where(causal_mask, 0, float("-inf"))
 
         # Add attention bias
-        if BIAS_TYPE != "none":
-            if BIAS_TYPE == "vector":
-                if EVEN_N:
-                    bias = tl.load(b_ptrs + start_n).to(tl.float32)
-                else:
-                    bias = tl.load(
-                        b_ptrs + start_n, mask=(start_n + offs_n) < seqlen_k, other=0.0
-                    ).to(tl.float32)
-                bias = bias[None, :]
-            elif BIAS_TYPE == "matrix":
-                if EVEN_M & EVEN_N:
-                    bias = tl.load(b_ptrs + start_n).to(tl.float32)
-                else:
-                    bias = tl.load(
-                        b_ptrs + start_n,
-                        mask=(offs_m[:, None] < seqlen_q)
-                        & ((start_n + offs_n)[None, :] < seqlen_k),
-                        other=0.0,
-                    ).to(tl.float32)
-            # Slightly faster to multiply the softmax_scale in the tl.exp below since the compiler
-            # can then fuse the mult and add into an fma instruction. But if we have bias we need to
-            # to multiply with softmax_scale here.
-            qk = qk * softmax_scale + bias
-            m_ij = tl.maximum(tl.max(qk, 1), lse_i)
-            P_ij = tl.exp(qk - m_ij[:, None])
-        else:
-            m_ij = tl.maximum(tl.max(qk, 1) * softmax_scale, lse_i)
-            P_ij = tl.exp2(qk * softmax_scale - m_ij[:, None])
+        # if BIAS_TYPE != "none":
+        #     if BIAS_TYPE == "vector":
+        #         if EVEN_N:
+        #             bias = tl.load(b_ptrs + start_n).to(tl.float32)
+        #         else:
+        #             bias = tl.load(
+        #                 b_ptrs + start_n, mask=(start_n + offs_n) < seqlen_k, other=0.0
+        #             ).to(tl.float32)
+        #         bias = bias[None, :]
+        #     elif BIAS_TYPE == "matrix":
+        #         if EVEN_M & EVEN_N:
+        #             bias = tl.load(b_ptrs + start_n).to(tl.float32)
+        #         else:
+        #             bias = tl.load(
+        #                 b_ptrs + start_n,
+        #                 mask=(offs_m[:, None] < seqlen_q)
+        #                 & ((start_n + offs_n)[None, :] < seqlen_k),
+        #                 other=0.0,
+        #             ).to(tl.float32)
+        #     # Slightly faster to multiply the softmax_scale in the tl.exp below since the compiler
+        #     # can then fuse the mult and add into an fma instruction. But if we have bias we need to
+        #     # to multiply with softmax_scale here.
+        #     qk = qk * softmax_scale + bias
+        #     m_ij = tl.maximum(tl.max(qk, 1), lse_i)
+        #     P_ij = tl.exp(qk - m_ij[:, None])
+        # else:
+        m_ij = tl.maximum(tl.max(qk, 1) * softmax_scale, lse_i)
+        P_ij = tl.exp2(qk * softmax_scale - m_ij[:, None])
 
         # Accumulate stats
         l_ij = tl.sum(P_ij, 1)
@@ -221,18 +241,7 @@ def _fwd_kernel(
 
         # Load V (same mechanism as K)
         offset_v_ptrs = v_ptrs + start_n * stride_vn
-        if pad_cols and HEADS_NOT_PADDED:
-            v = tl.load(offset_v_ptrs, mask=(start_n + offs_n)[:, None] < actual_seqlen_k, other=0.0) 
-        elif pad_cols:
-            v = tl.load(
-                offset_v_ptrs, 
-                mask=((start_n + offs_n)[:, None] < actual_seqlen_k) & (offs_d[None, :] < headdim), 
-                other=0.0,
-            )
-        elif HEADS_NOT_PADDED:
-            v = tl.load(offset_v_ptrs)
-        else:
-            v = tl.load(offset_v_ptrs, mask=offs_d[None, :] < headdim, other=0.0)
+        v = load_fn(offset_v_ptrs, start_n + offs_n, offs_d, pad_cols, PADDED_HEADS, actual_seqlen_k, headdim)
 
         # Update the output accumulator
         P_ij = P_ij.to(v.dtype)
@@ -269,11 +278,11 @@ def _fwd_kernel(
     )
 
     # Store O (same mechanism as Q)
-    if pad_rows and HEADS_NOT_PADDED:
-        tl.store(out_ptrs, acc_o, mask=offs_m[:, None] < actual_seqlen_q)
-    elif pad_rows:
+    if pad_rows and PADDED_HEADS:
         tl.store(out_ptrs, acc_o, mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim))
-    elif HEADS_NOT_PADDED: # nothing is padded
-        tl.store(out_ptrs, acc_o)
-    else: # only heads are padded
+    elif pad_rows:
+        tl.store(out_ptrs, acc_o, mask=offs_m[:, None] < actual_seqlen_q)
+    elif PADDED_HEADS: # nothing is padded
         tl.store(out_ptrs, acc_o, mask=offs_d[None, :] < headdim)
+    else: # only heads are padded
+        tl.store(out_ptrs, acc_o)

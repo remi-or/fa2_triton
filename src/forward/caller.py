@@ -30,15 +30,15 @@ def _flash_attn_forward(
         varlen_mode = False
 
     # Retrieve and check shapes (TODO: remove as much as possible of those)
-    batch, seqlen_q, nheads, d = q.shape
+    batch, seqlen_q, nheads, head_dim = q.shape
     _, seqlen_k, _, _ = k.shape
-    assert k.shape == (batch, seqlen_k, nheads, d)
-    assert v.shape == (batch, seqlen_k, nheads, d)
-    assert d <= 128, "FlashAttention only support head dimensions up to 128"
+    assert k.shape == (batch, seqlen_k, nheads, head_dim)
+    assert v.shape == (batch, seqlen_k, nheads, head_dim)
+    assert head_dim <= 128, "FlashAttention only support head dimensions up to 128"
     assert q.dtype == k.dtype == v.dtype, "All tensors must have the same type"
     assert q.dtype in [torch.float16, torch.bfloat16], "Only support fp16 and bf16"
     assert q.is_cuda and k.is_cuda and v.is_cuda
-    softmax_scale = 1.0 / math.sqrt(d) if softmax_scale is None else softmax_scale
+    softmax_scale = 1.0 / math.sqrt(head_dim) if softmax_scale is None else softmax_scale
 
     # Depending on attention_mask, switch to varlen
     if varlen_mode:
@@ -86,9 +86,9 @@ def _flash_attn_forward(
     lse = torch.zeros((batch, nheads, max_seqlen_q_rounded), device=q.device, dtype=torch.float32)
 
     # Infer problem size and launch kernel
-    BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
+    BLOCK_HEADDIM = max(triton.next_power_of_2(head_dim), 16)
     BLOCK = 128
-    num_warps = 4 if d <= 64 else 8
+    num_warps = 4 if head_dim <= 64 else 8
     grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch * nheads)
     _fwd_kernel[grid](
         q,
@@ -108,7 +108,7 @@ def _flash_attn_forward(
         cum_seqlens_q, # array containing [seqlen_q_1, ..., seqlen_q_B] , if VARLEN, else None
         seqlen_k,
         max_seqlen_q_rounded,
-        d,
+        head_dim,
         seqlen_q // 32,
         seqlen_k // 32,  # key for triton cache (limit number of compilations)
         # Can't use kwargs here because triton autotune expects key to be args, not kwargs
