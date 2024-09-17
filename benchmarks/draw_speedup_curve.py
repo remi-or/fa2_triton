@@ -11,7 +11,7 @@ from benchmarks.utils import measure_kernel_latency
 COMPARE_TO = "Pytorch"
 REPEATS = 10
 
-BATCH_SIZES = [2**i for i in range(1)]
+BATCH_SIZES = [2**i for i in range(3)]
 HIDDEN_DIM = 4096
 NUM_HEADS = 32
 DTYPE = torch.float16
@@ -23,7 +23,7 @@ if __name__ == "__main__":
     fig, axs = plt.subplots(3, 1, sharex=True, figsize=(6, 12))
 
     for batch_size in BATCH_SIZES:
-        seqlens = torch.linspace(1, 2**14, steps=POINTS_PER_BATCH).int()
+        seqlens = torch.linspace(1, 2**14, steps=POINTS_PER_BATCH)
         measured_times = torch.zeros(size=(seqlens.size(0), 2, 2))
         oom_reached = False
 
@@ -40,7 +40,7 @@ if __name__ == "__main__":
                     num_heads=NUM_HEADS, 
                     seqlen=seqlen.item(), 
                     head_dim=HIDDEN_DIM // NUM_HEADS, 
-                    causal=False,
+                    causal=True,
                     dtype=DTYPE,
                 )
                 if time_forward_and_backward is None: # oom
@@ -52,14 +52,15 @@ if __name__ == "__main__":
                     measured_times[i, j] = torch.tensor(time_forward_and_backward)
         
         axs[0].set_title("Forward pass")
-        axs[0].plot(seqlens, measured_times[:, 0, 0] / measured_times[:, 1, 0], label=str(batch_size))
+        axs[0].plot(seqlens, measured_times[:, 0, 0] / measured_times[:, 1, 0], label=f"B = {batch_size}")
         axs[1].set_title("Backward pass")
-        axs[1].plot(seqlens, measured_times[:, 0, 1] / measured_times[:, 1, 1], label=str(batch_size))
+        axs[1].plot(seqlens, measured_times[:, 0, 1] / measured_times[:, 1, 1], label=f"B = {batch_size}")
         axs[2].set_title("Combined")
-        axs[2].plot(seqlens, measured_times.sum(-1)[:, 0] / measured_times.sum(-1)[:, 1], label=str(batch_size))
+        axs[2].plot(seqlens, measured_times.sum(-1)[:, 0] / measured_times.sum(-1)[:, 1], label=f"B = {batch_size}")
         for i in range(3):
             axs[i].set_ylabel("Speedup")
             axs[i].axhline(1, color="red", linestyle="--")
+            axs[i].legend()
         axs[2].set_xlabel("Sequence length")
 
     plt.plot()

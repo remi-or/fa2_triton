@@ -116,7 +116,7 @@ def _flash_attn_forward(
         varlen_mode,
         bias_type,
         causal,
-        BLOCK_HEADDIM,
+        BLOCK_HEADDIM=BLOCK_HEADDIM,
         BLOCK_M=BLOCK,
         BLOCK_N=BLOCK,
         num_warps=num_warps,
