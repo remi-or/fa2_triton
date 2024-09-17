@@ -1,6 +1,8 @@
 import triton
 import triton.language as tl
 
+from src.utils import load_fn
+
 @triton.jit
 def _bwd_store_dk_dv(
     dk_ptrs,
@@ -143,15 +145,7 @@ def _compute_column_block(
 
         # Check if we can load a whole block of Q
         pad_rows = not EVEN_M or (VARLEN and (start_m + BLOCK_M > actual_seqlen_q))
-        # Load Q
-        if pad_rows and HEADS_NOT_PADDED:
-            q = tl.load(q_ptrs, mask=(offs_m_curr[:, None] < actual_seqlen_q), other=0.0)
-        elif HEADS_NOT_PADDED:
-            q = tl.load(q_ptrs)
-        elif pad_rows:                
-            q = tl.load(q_ptrs, mask=(offs_m_curr[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim), other=0.0)
-        else:
-            q = tl.load(q_ptrs, mask=(offs_d[None, :] < headdim), other=0.0)
+        q = load_fn(q_ptrs, offs_m_curr, offs_d, pad_rows, not HEADS_NOT_PADDED, actual_seqlen_q, headdim)
 
         tl.debug_barrier()
         # Recompute P_ij = softmax(qk, dim=-1).T
@@ -194,7 +188,7 @@ def _compute_column_block(
         # Load the LogSumExp and retrieve P
         lse_i = tl.load(LSE + offs_m_curr) # since lsm is padded to max_seqlen_q, should be good
         if BIAS_TYPE == "none":
-            p = tl.exp(qk * softmax_scale - lse_i[:, None])
+            p = tl.exp2(qk * (softmax_scale * 1.44269504089) - lse_i[:, None])
         else:
             p = tl.exp(qk - lse_i[:, None])
 
@@ -205,18 +199,13 @@ def _compute_column_block(
 
         tl.debug_barrier()
         # Load the gradient of O
-        if pad_rows and HEADS_NOT_PADDED:
-            do = tl.load(do_ptrs, mask=(offs_m_curr[:, None] < actual_seqlen_q), other=0.0)
-        elif HEADS_NOT_PADDED:
-            do = tl.load(do_ptrs)
-        elif pad_rows:                
-            do = tl.load(do_ptrs, mask=(offs_m_curr[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim), other=0.0)
-        else:
-            do = tl.load(do_ptrs, mask=(offs_d[None, :] < headdim), other=0.0)
+
+        do = load_fn(do_ptrs, offs_m_curr, offs_d, pad_rows, not HEADS_NOT_PADDED, actual_seqlen_q, headdim)
             
         tl.debug_barrier()
         # Compute the gradient of V
-        dv += tl.dot(tl.trans(p.to(do.dtype)), do)
+        dv += tl.dot(tl.trans(p).to(do.dtype), do) 
+        # HOTFIX : the to(fp32) brings extra precision but slows the kernel quite a bit. maybe remove it. 
 
         tl.debug_barrier() # TODO: rm?
         # Compute auxiliary gradients

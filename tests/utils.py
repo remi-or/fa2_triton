@@ -37,8 +37,12 @@ def generate_attention_mask(x: Tensor, verbose: bool = False) -> Tensor:
         return attention_mask
     # Otherwise, choose a random padding per batch
     padding_per_batch = torch.randint(low=0, high=x.size(1)-1, size=(x.size(0), )).tolist()
+    # Make sure one sequence is not padded
+    full_sequence_index = torch.randint(low=0, high=x.size(0), size=(1,)).item()
+    padding_per_batch[full_sequence_index] = 0
     for i, padding in enumerate(padding_per_batch):
-        attention_mask[i, -padding:] = 0
+        if padding:
+            attention_mask[i, -padding:] = 0
     if verbose:
         print("Paddings:", padding_per_batch)
     return attention_mask
@@ -65,7 +69,7 @@ def compare_results_fa(
     grad_error_mul: int = 3, # 2 or 3 
     grad_error_bias: float = 1e-5, # 0 or 1e-5
 ) -> Tuple[Optional[Tensor], ...]:
-    """This code is a slightly modified version of the one from the original FlashAttention repo: 
+    """This code is a modified version of the one from the original FlashAttention repo: 
         https://github.com/Dao-AILab/flash-attention/blob/main/tests/test_flash_attn.py """
     
     # Display output-related diffs

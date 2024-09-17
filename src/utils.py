@@ -1,4 +1,6 @@
 import torch
+import triton
+import triton.language as tl
 
 def attention_pack(
     x: torch.Tensor, # [batch_size, seqlen, num_heads, head_dim]
@@ -23,3 +25,23 @@ def attention_unpack(
         seq_end = cum_seqlens[i+1]
         unpacked[i, :seq_end-seq_start] = x[0, seq_start:seq_end]
     return unpacked
+
+@triton.jit
+def load_fn(
+    ptrs, 
+    offs_axis_0: tl.const_pointer_type,
+    offs_axis_1: tl.const_pointer_type,
+    PAD_AXIS_0: tl.constexpr,
+    PAD_AXIS_1: tl.constexpr,
+    LIM_AXIS_0: tl.constexpr,
+    LIM_AXIS_1: tl.constexpr,
+):
+    if PAD_AXIS_0 and not PAD_AXIS_1: # rows only are padded
+        x = tl.load(ptrs, mask=offs_axis_0[:, None] < LIM_AXIS_0, other=0.0)
+    elif PAD_AXIS_0: # rows and heads are padded 
+        x = tl.load(ptrs, mask=(offs_axis_0[:, None] < LIM_AXIS_0) & (offs_axis_1[None, :] < LIM_AXIS_1), other=0.0)
+    elif not PAD_AXIS_1: # nothing is padded
+        x = tl.load(ptrs)
+    else: # only heads are padded
+        x = tl.load(ptrs, mask=offs_axis_1[None, :] < LIM_AXIS_1, other=0.0)
+    return x

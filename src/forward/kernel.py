@@ -1,29 +1,11 @@
 import triton
 import triton.language as tl
 
+from src.utils import load_fn
+
 # TODO: exit causal blocks early
 # TODO: check if using exp2 instead of exp leads to better results / times
 # TODO: can we initialize accO to empty instead of 0? 
-
-@triton.jit
-def load_fn(
-    ptrs, 
-    offs_axis_0: tl.const_pointer_type,
-    offs_axis_1: tl.const_pointer_type,
-    PAD_AXIS_0: tl.constexpr,
-    PAD_AXIS_1: tl.constexpr,
-    LIM_AXIS_0: tl.constexpr,
-    LIM_AXIS_1: tl.constexpr,
-):
-    if PAD_AXIS_0 and not PAD_AXIS_1: # rows only are padded
-        x = tl.load(ptrs, mask=offs_axis_0[:, None] < LIM_AXIS_0, other=0.0)
-    elif PAD_AXIS_0: # rows and heads are padded 
-        x = tl.load(ptrs, mask=(offs_axis_0[:, None] < LIM_AXIS_0) & (offs_axis_1[None, :] < LIM_AXIS_1), other=0.0)
-    elif not PAD_AXIS_1: # nothing is padded
-        x = tl.load(ptrs)
-    else: # only heads are padded
-        x = tl.load(ptrs, mask=offs_axis_1[None, :] < LIM_AXIS_1, other=0.0)
-    return x
 
 # @triton.autotune( TODO: re-establish that using the cache args
 #     configs=[
@@ -266,7 +248,7 @@ def _fwd_kernel(
     # Write back l and m
     ## Q + off_batch * stride_qb + off_head * stride_qh + cu_seq_start_q * stride_qm
     lse_ptrs = Lse + off_head_and_batch * max_seqlen_q_rounded + offs_m
-    tl.store(lse_ptrs, lse_i / 1.44269504089)
+    tl.store(lse_ptrs, lse_i)
     # Initialize pointers to output
     offs_d = tl.arange(0, BLOCK_HEADDIM)
     out_ptrs = (
