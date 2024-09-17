@@ -1,5 +1,6 @@
 import torch
-from src.kernel_callers import _flash_attn_forward, _flash_attn_backward
+from src.forward.caller import _flash_attn_forward
+from src.backward.caller import _flash_attn_backward
 
 
 class FlashAttnFunc(torch.autograd.Function):

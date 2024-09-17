@@ -9,32 +9,34 @@ import sys
 root = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(root)
 
-from src.kernel_wrapper import flash_attn_func
+from src.wrapper import flash_attn_func
 from tests.utils import generate_test_data, start_and_end, generate_attention_mask, compare_results_fa, compare_tensors
 from src.other_implemenations.reference_implementation import attention_ref
 
 batch_size = 4
 num_heads = 9
 
-seqlen_q = 97
-seqlen_k = 97
+seqlen_q = 1
+seqlen_k = 239
+swap_seqlens = True
+use_attention = False
 
-head_dim = 64
-attention = False
-
+head_dim = 111
 causal = False
 dtype = torch.float16
 
-forward_only = False
+forward_only = True
 
 
 if __name__ == "__main__":
-    if attention:
+    if use_attention:
         assert seqlen_q == seqlen_k
+    if swap_seqlens:
+        seqlen_q, seqlen_k = seqlen_k, seqlen_q
 
     # Prepare data
     q, k, v, do = generate_test_data(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, dtype)
-    attn_mask = generate_attention_mask(q, True) if attention else None
+    attn_mask = generate_attention_mask(q, True) if use_attention else None
 
     # Compute reference
     out_ref = attention_ref(q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, causal=causal)
@@ -51,13 +53,13 @@ if __name__ == "__main__":
         print("Ref:", start_and_end(out_ref, 3))
         print("Pt:", start_and_end(out_pt, 3))
 
+        compare_results_fa(q, k, v, None, out, out_ref, out_pt)
+        
         out, out_pt, out_ref = [x.flatten(start_dim=1, end_dim=2) for x in (out, out_pt, out_ref)]
 
         # Save a glimpse of the results
         fig, axs = plt.subplots(1, 3)
         for i, x in enumerate([out, out_pt, out_ref]):
-            axs[i].imshow(x[-1].numpy(force=True))
-            axs[i].imshow(x[-1].numpy(force=True))
             axs[i].imshow(x[-1].numpy(force=True))
         fig.savefig("__tmp__.png")
 

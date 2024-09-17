@@ -1,12 +1,14 @@
 """Here, we test if the kernel when there is no attention mask and seqlen_q != seqlen_k."""
 
 import sys
-sys.path.append("/home/remi_ouazan/fa2")
+import os.path as osp
+sys.path.append(osp.dirname(osp.dirname(__file__)))
+
 import torch
 import pytest
 from torch import Tensor
 
-from src.kernel_wrapper import flash_attn_func
+from src.wrapper import flash_attn_func
 from tests.utils import generate_test_data, generate_attention_mask
 
 
@@ -85,22 +87,27 @@ def test_repeatability(
 if __name__ == "__main__":
     repeats = 10
 
-    batch_size = 3
-    num_heads = 1
+    batch_size = 4
+    num_heads = 9
 
-    seqlen_q = 100
-    seqlen_k = 16
+    seqlen_q = 1
+    seqlen_k = 239
+    swap_seqlens = True
+    use_attention = False
 
-    head_dim = 32
-    attention= True
-
+    head_dim = 111
     causal = False
     dtype = torch.float16
+
+    forward_only = True
+
+    if swap_seqlens: 
+        seqlen_k, seqlen_q = seqlen_q, seqlen_k
 
     _test_repeatability(
         repeats=repeats, 
         batch_size=batch_size, num_heads=num_heads, seqlen_q=seqlen_q, seqlen_k=seqlen_k, head_dim=head_dim, 
-        attention=attention, causal=causal, dtype=dtype)
+        attention=use_attention, causal=causal, dtype=dtype)
 
 # headdim=40, seqlen=(128, 117)
 
