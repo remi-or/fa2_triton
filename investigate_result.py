@@ -12,27 +12,30 @@ sys.path.append(root)
 from src.wrapper import flash_attn_func
 from tests.utils import generate_test_data, start_and_end, generate_attention_mask, compare_results_fa, compare_tensors
 from src.other_implemenations.reference_implementation import attention_ref
+from tests.test_repeatability import _test_repeatability
 
-batch_size = 4
-num_heads = 9
+batch_size = 1
+num_heads = 32
 
-seqlen_q = 1
-seqlen_k = 239
-swap_seqlens = True
+seqlen_q = 1920
+seqlen_k = 1920
+swap_seqlens = False
 use_attention = False
 
-head_dim = 111
-causal = False
+head_dim = 4096 // 32
+causal = True
 dtype = torch.float16
 
-forward_only = True
+forward_only = False
 
 
 if __name__ == "__main__":
-    if use_attention:
-        assert seqlen_q == seqlen_k
+    # os.environ["TRITON_INTERPRET"] = "1"
+
     if swap_seqlens:
         seqlen_q, seqlen_k = seqlen_k, seqlen_q
+    if use_attention:
+        seqlen_q = seqlen_k
 
     # Prepare data
     q, k, v, do = generate_test_data(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, dtype)
@@ -52,16 +55,17 @@ if __name__ == "__main__":
         print("Ours:", start_and_end(out, 3))
         print("Ref:", start_and_end(out_ref, 3))
         print("Pt:", start_and_end(out_pt, 3))
-
-        compare_results_fa(q, k, v, None, out, out_ref, out_pt)
         
         out, out_pt, out_ref = [x.flatten(start_dim=1, end_dim=2) for x in (out, out_pt, out_ref)]
 
         # Save a glimpse of the results
         fig, axs = plt.subplots(1, 3)
-        for i, x in enumerate([out, out_pt, out_ref]):
-            axs[i].imshow(x[-1].numpy(force=True))
+        axs[0].imshow(out[-1].numpy(force=True))
+        axs[1].imshow(out_pt[-1].numpy(force=True))
+        axs[2].imshow(out.sub(out_pt).abs()[-1].numpy(force=True))
         fig.savefig("__tmp__.png")
+
+        compare_results_fa(q, k, v, None, out, out_ref, out_pt)
 
         # Compare results
         compare_tensors(out, out_ref)
@@ -85,10 +89,23 @@ if __name__ == "__main__":
     # Save a glimpse of the results
     fig, axs = plt.subplots(3, 3)
     for i, dxs in enumerate([(dq, dq_pt, dq_ref), (dk, dk_pt, dk_ref), (dv, dv_pt, dv_ref)]):
-        axs[i, 0].imshow(dxs[0][-1].numpy(force=True))
-        axs[i, 1].imshow(dxs[1][-1].numpy(force=True))
-        axs[i, 2].imshow(dxs[2][-1].numpy(force=True))
+        axs[i, 0].imshow(dxs[0][-1].float().numpy(force=True))
+        axs[i, 1].imshow(dxs[1][-1].float().numpy(force=True))
+        axs[i, 2].imshow(dxs[0].sub(dxs[1]).abs()[-1].float().numpy(force=True))
+        # axs[i, 2].imshow(dxs[2][-1].numpy(force=True))
     fig.savefig("__tmp__.png")
+
+    _test_repeatability(
+        repeats=5, 
+        batch_size=batch_size, 
+        num_heads=num_heads, 
+        seqlen_q=seqlen_q, 
+        seqlen_k=seqlen_k, 
+        head_dim=head_dim, 
+        attention=use_attention, 
+        causal=causal, 
+        dtype=dtype,
+    )
 
     # Compare results
     compare_results_fa(q, k, v, do, out, out_ref, out_pt)

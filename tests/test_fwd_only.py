@@ -40,7 +40,7 @@ def _test_fwd_only(
 # @pytest.mark.parametrize("local", [False, True]) # TODO: add support for window size?
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("head_dim", [32, 40, 59, 64, 80, 96, 111, 128]) # TODO: add support for head dim > 128, 160, 192, 224, 256])
-@pytest.mark.parametrize("swap_seqlens, use_attention", [(False, False), (False, True), (True, False)])
+@pytest.mark.parametrize("swap_seqlens, use_attention", [(False, True), (False, False), (True, False)])
 @pytest.mark.parametrize(
     "seqlen_q,seqlen_k",
     [

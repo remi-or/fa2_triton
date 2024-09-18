@@ -41,12 +41,14 @@ def _flash_attn_forward(
     softmax_scale = 1.0 / math.sqrt(head_dim) if softmax_scale is None else softmax_scale
 
     # Depending on attention_mask, switch to varlen
+    varlen_mode = varlen_mode and (batch > 1)
     if varlen_mode:
         # Compute padding-related statistics
         cum_seqlens_q = torch.zeros(size=(attention_mask.size(0)+1,), device=attention_mask.device, dtype=torch.int32)
         cum_seqlens_q[1:] = attention_mask.sum(dim=1).cumsum(0) 
         # cum_seqlens_q = [0, seqlen_q1, seqlen_q1+seqlen_q2, ..., seqlen_q1+...+seqlen_qB] of shape [B+1]
         max_seqlen_q: int = attention_mask.size(1)
+        max_seqlen_k: int = attention_mask.size(1)
         # Collate all matrices
         q = attention_pack(q, attention_mask) # [1, sum_seqlens_qk, num_head, head_dim]
         k = attention_pack(k, attention_mask) # [1, sum_seqlens_qk, num_head, head_dim]
@@ -56,6 +58,7 @@ def _flash_attn_forward(
     else:
         cum_seqlens_q = None
         max_seqlen_q = seqlen_q
+        max_seqlen_k = seqlen_k
 
     # Setup output accumulator
     o = torch.zeros_like(q)
@@ -87,8 +90,9 @@ def _flash_attn_forward(
 
     # Infer problem size and launch kernel
     BLOCK_HEADDIM = max(triton.next_power_of_2(head_dim), 16)
-    BLOCK = 128
-    num_warps = 4 if head_dim <= 64 else 8
+    PADDED_HEADS = (BLOCK_HEADDIM > head_dim)
+    # BLOCK = 128
+    # num_warps = 4 if head_dim <= 64 else 8
     grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch * nheads)
     _fwd_kernel[grid](
         q,
@@ -109,18 +113,15 @@ def _flash_attn_forward(
         seqlen_k,
         max_seqlen_q_rounded,
         head_dim,
-        seqlen_q // 32,
-        seqlen_k // 32,  # key for triton cache (limit number of compilations)
+        max_seqlen_q // 128,
+        max_seqlen_k // 128,  # key for triton cache (limit number of compilations)
         # Can't use kwargs here because triton autotune expects key to be args, not kwargs
         # VARLEN=varlen_mode, IS_CAUSAL=causal, BLOCK_HEADDIM=d,
         varlen_mode,
         bias_type,
-        causal,
-        BLOCK_HEADDIM,
-        BLOCK_M=BLOCK,
-        BLOCK_N=BLOCK,
-        num_warps=num_warps,
-        num_stages=1,
+        IS_CAUSAL=causal,
+        BLOCK_HEADDIM=BLOCK_HEADDIM,
+        PADDED_HEADS=PADDED_HEADS,
     )
 
     # When in variable length mode, we need to unpack the packed tensors
