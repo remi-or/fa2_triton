@@ -90,6 +90,7 @@ def _flash_attn_forward(
 
     # Infer problem size and launch kernel
     BLOCK_HEADDIM = max(triton.next_power_of_2(head_dim), 16)
+    PADDED_HEADS = (BLOCK_HEADDIM > head_dim)
     # BLOCK = 128
     # num_warps = 4 if head_dim <= 64 else 8
     grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch * nheads)
@@ -120,6 +121,7 @@ def _flash_attn_forward(
         bias_type,
         IS_CAUSAL=causal,
         BLOCK_HEADDIM=BLOCK_HEADDIM,
+        PADDED_HEADS=True, # TODO
     )
 
     # When in variable length mode, we need to unpack the packed tensors
