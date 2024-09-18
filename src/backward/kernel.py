@@ -33,7 +33,7 @@ def init_to_zero(name):
     {
         "EVEN_M": lambda args: args["seqlen_q"] % args["BLOCK_M"] == 0,
         "EVEN_N": lambda args: args["seqlen_k"] % args["BLOCK_N"] == 0,
-        "HEADS_NOT_PADDED": lambda args: args["headdim"] == args["BLOCK_HEADDIM"],
+        "HEADS_PADDED": lambda args: args["headdim"] != args["BLOCK_HEADDIM"],
     }
 )
 @triton.jit
@@ -75,7 +75,7 @@ def _bwd_kernel(
     BLOCK_N: tl.constexpr,
     EVEN_M: tl.constexpr,
     EVEN_N: tl.constexpr,
-    HEADS_NOT_PADDED: tl.constexpr,
+    HEADS_PADDED: tl.constexpr,
 ):
     # Locate kernel inside the grid
     off_head_and_batch = tl.program_id(1)
@@ -145,7 +145,7 @@ def _bwd_kernel(
                 BLOCK_HEADDIM=BLOCK_HEADDIM,
                 EVEN_M=EVEN_M,
                 EVEN_N=EVEN_N,
-                HEADS_NOT_PADDED=HEADS_NOT_PADDED,
+                HEADS_PADDED=HEADS_PADDED,
                 BLOCK_M=BLOCK_M,
                 BLOCK_N=BLOCK_N,
             )
@@ -182,7 +182,7 @@ def _bwd_kernel(
             BLOCK_HEADDIM=BLOCK_HEADDIM,
             EVEN_M=EVEN_M,
             EVEN_N=EVEN_N,
-            HEADS_NOT_PADDED=HEADS_NOT_PADDED,
+            HEADS_PADDED=HEADS_PADDED,
             BLOCK_M=BLOCK_M,
             BLOCK_N=BLOCK_N,
         )
