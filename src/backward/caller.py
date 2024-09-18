@@ -81,7 +81,7 @@ def _flash_attn_backward(
         max_seqlen_q = seqlen_q
         max_seqlen_k = seqlen_k
 
-    # Prepare gradient accumulators # TODO: to simplify stuff, we initialize this to 0, but we could leave it empty
+    # Prepare gradient accumulators # TODO: to simplify stuff, we initialize this to 0, but we could leave it empty -- check pre hook
     dq = torch.zeros_like(q, dtype=torch.float32) # [batch_size|1, seqlen_q|sum_seqlens_qk, num_heads, head_dim]
     dk = torch.zeros_like(k) # [batch_size|1, seqlen_q|sum_seqlens_q, num_heads, head_dim]
     dv = torch.zeros_like(v) # [batch_size|1, seqlen_q|sum_seqlens_k, num_heads, head_dim]
@@ -179,9 +179,9 @@ def _flash_attn_backward(
         bias_type,
         causal,
         BLOCK_HEADDIM,
-        True, # SEQUENCE_PARALLEL # TODO: check what happens when False
-        128, # BLOCK_M
-        128, # BLOCK_N
+        128,
+        128,
+        num_stages=1,
         # SEQUENCE_PARALLEL=False,  BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,  num_warps=num_warps, num_stages=1,
     )
 

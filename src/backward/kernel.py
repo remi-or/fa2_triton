@@ -10,24 +10,20 @@ def init_to_zero(name):
 
 # @triton.autotune(
 #     configs=[
-#         triton.Config(
-#             {"BLOCK_M": 128, "BLOCK_N": 128, "SEQUENCE_PARALLEL": True},
-#             num_warps=8,
-#             num_stages=1,
-#         ),
-#         triton.Config(
-#             {"BLOCK_M": 64, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True},
-#             num_warps=8,
-#             num_stages=1,
-#         ),
-#         # Other configs seem to give wrong results when seqlen_q % 128 != 0, disabling them for now
-#         # # Kernel is buggy (give wrong result) if we set BLOCK_m=128, BLOCK_n=64, num_warps=*4*
-#         # triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False}, num_warps=8, num_stages=1, pre_hook=init_to_zero('DQ')),
-#         # triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True}, num_warps=8, num_stages=1, pre_hook=init_to_zero('DQ')),
-#         # triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False}, num_warps=4, num_stages=1, pre_hook=init_to_zero('DQ')),
-#         # triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True}, num_warps=4, num_stages=1, pre_hook=init_to_zero('DQ')),
+#         triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=4, num_stages=0),
+#         triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=0),
+#         triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=4, num_stages=0),
+#         triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=8, num_stages=0),
+# #         # triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=4, num_stages=1), # TODO: change seqlen rounded
+# #         # triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=8, num_stages=1),
+# #         # Other configs seem to give wrong results when seqlen_q % 128 != 0, disabling them for now
+# #         # # Kernel is buggy (give wrong result) if we set BLOCK_m=128, BLOCK_n=64, num_warps=*4*
+# #         # triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False}, num_warps=8, num_stages=1, pre_hook=init_to_zero('DQ')),
+# #         # triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True}, num_warps=8, num_stages=1, pre_hook=init_to_zero('DQ')),
+# #         # triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False}, num_warps=4, num_stages=1, pre_hook=init_to_zero('DQ')),
+# #         # triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True}, num_warps=4, num_stages=1, pre_hook=init_to_zero('DQ')),
 #     ],
-#     key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "BIAS_TYPE", "IS_CAUSAL", "BLOCK_HEADDIM"],
+#     key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "VARLEN", "IS_CAUSAL", "BLOCK_HEADDIM"],
 # )
 @triton.heuristics(
     {
@@ -70,7 +66,6 @@ def _bwd_kernel(
     BIAS_TYPE: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
-    SEQUENCE_PARALLEL: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     EVEN_M: tl.constexpr,
@@ -110,79 +105,39 @@ def _bwd_kernel(
     # Offset vector pointers for batch and head
     D += off_head_and_batch * seqlen_q_rounded
     LSE += off_head_and_batch * seqlen_q_rounded
-    
-    if not SEQUENCE_PARALLEL:
-        num_block_n = tl.cdiv(seqlen_k, BLOCK_N)
-        for start_n in range(0, num_block_n):
-            _compute_column_block(
-                start_n,
-                Q,
-                K,
-                V,
-                Bias,
-                DO,
-                DQ,
-                DK,
-                DV,
-                LSE,
-                D,
-                softmax_scale,
-                stride_qm,
-                stride_kn,
-                stride_vn,
-                stride_bm,
-                stride_dom,
-                stride_dqm,
-                stride_dkn,
-                stride_dvn,
-                VARLEN,
-                actual_seqlen_q,
-                actual_seqlen_k,
-                headdim,
-                ATOMIC_ADD=False,
-                BIAS_TYPE=BIAS_TYPE,
-                IS_CAUSAL=IS_CAUSAL,
-                BLOCK_HEADDIM=BLOCK_HEADDIM,
-                EVEN_M=EVEN_M,
-                EVEN_N=EVEN_N,
-                HEADS_PADDED=HEADS_PADDED,
-                BLOCK_M=BLOCK_M,
-                BLOCK_N=BLOCK_N,
-            )
-    else:
-        start_n = tl.program_id(0)
-        _compute_column_block(
-            start_n,
-            Q,
-            K,
-            V,
-            Bias,
-            DO,
-            DQ,
-            DK,
-            DV,
-            LSE,
-            D,
-            softmax_scale,
-            stride_qm,
-            stride_kn,
-            stride_vn,
-            stride_bm,
-            stride_dom,
-            stride_dqm,
-            stride_dkn,
-            stride_dvn,
-            VARLEN,
-            actual_seqlen_q,
-            actual_seqlen_k,
-            headdim,
-            ATOMIC_ADD=True,
-            BIAS_TYPE=BIAS_TYPE,
-            IS_CAUSAL=IS_CAUSAL,
-            BLOCK_HEADDIM=BLOCK_HEADDIM,
-            EVEN_M=EVEN_M,
-            EVEN_N=EVEN_N,
-            HEADS_PADDED=HEADS_PADDED,
-            BLOCK_M=BLOCK_M,
-            BLOCK_N=BLOCK_N,
-        )
+
+    start_n = tl.program_id(0)
+    _compute_column_block(
+        start_n,
+        Q,
+        K,
+        V,
+        Bias,
+        DO,
+        DQ,
+        DK,
+        DV,
+        LSE,
+        D,
+        softmax_scale,
+        stride_qm,
+        stride_kn,
+        stride_vn,
+        stride_bm,
+        stride_dom,
+        stride_dqm,
+        stride_dkn,
+        stride_dvn,
+        actual_seqlen_q,
+        actual_seqlen_k,
+        headdim,
+        VARLEN=VARLEN,
+        BIAS_TYPE=BIAS_TYPE,
+        IS_CAUSAL=IS_CAUSAL,
+        BLOCK_HEADDIM=BLOCK_HEADDIM,
+        EVEN_M=EVEN_M,
+        EVEN_N=EVEN_N,
+        HEADS_PADDED=HEADS_PADDED,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+    )

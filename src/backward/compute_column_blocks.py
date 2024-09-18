@@ -62,11 +62,10 @@ def _compute_column_block(
     stride_dqm,
     stride_dkn,
     stride_dvn,
-    VARLEN: tl.constexpr,
     actual_seqlen_q,
     actual_seqlen_k,
     headdim,
-    ATOMIC_ADD: tl.constexpr,
+    VARLEN: tl.constexpr,
     BIAS_TYPE: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
@@ -134,15 +133,15 @@ def _compute_column_block(
     
     # Loop over rows
     end_m = actual_seqlen_q
-    for start_m in range(begin_m, end_m, BLOCK_M):
+    for I_start_m in range(begin_m, end_m, BLOCK_M):
 
         tl.debug_barrier()
         # Update row variables
-        start_m = tl.multiple_of(start_m, BLOCK_M)
-        offs_m_curr = start_m + offs_m
+        I_start_m = tl.multiple_of(I_start_m, BLOCK_M)
+        offs_m_curr = I_start_m + offs_m
 
         # Check if we can load a whole block of Q
-        pad_rows = not EVEN_M or (VARLEN and (start_m + BLOCK_M > actual_seqlen_q))
+        pad_rows = not EVEN_M or (VARLEN and (I_start_m + BLOCK_M > actual_seqlen_q))
         q = load_fn(q_ptrs, offs_m_curr, offs_d, pad_rows, HEADS_PADDED, actual_seqlen_q, headdim)
 
         tl.debug_barrier()
@@ -223,41 +222,18 @@ def _compute_column_block(
 
         tl.debug_barrier()
         
-        # Compute dq in sequence mode
-        if not ATOMIC_ADD:
-            # Load current dq
-            dq = load_fn(
-                dq_ptrs, offs_m_curr, offs_d,
-                PAD_AXIS_0=pad_rows, PAD_AXIS_1=HEADS_PADDED,
-                LIM_AXIS_0=actual_seqlen_q, LIM_AXIS_1=headdim,
-            )
-            # Accumulate
-            tl.debug_barrier()
-            dq += tl.dot(ds, k)
-            # Store
-            if pad_rows and HEADS_PADDED:
-                tl.store(dq_ptrs, dq, mask=(offs_m_curr[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim), eviction_policy="evict_last")
-            elif HEADS_PADDED:
-                tl.store(dq_ptrs, dq, mask=(offs_d[None, :] < headdim), eviction_policy="evict_last")
-            elif pad_rows:
-                tl.store(dq_ptrs, dq, mask=offs_m_curr[:, None] < actual_seqlen_q, eviction_policy="evict_last")
-            else:
-                tl.store(dq_ptrs, dq, eviction_policy="evict_last")
-            tl.debug_barrier()
-
         # Compute dq in parallel mode
-        else:  
-            tl.debug_barrier()
-            dq = tl.dot(ds, k)
-            tl.debug_barrier()
-            if pad_rows and HEADS_PADDED:
-                tl.atomic_add(dq_ptrs, dq, mask=(offs_m_curr[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim))
-            elif HEADS_PADDED:
-                tl.atomic_add(dq_ptrs, dq, mask=(offs_d[None, :] < headdim))
-            elif pad_rows:
-                tl.atomic_add(dq_ptrs, dq, mask=offs_m_curr[:, None] < actual_seqlen_q)
-            else:
-                tl.atomic_add(dq_ptrs, dq)
+        tl.debug_barrier()
+        dq = tl.dot(ds, k)
+        tl.debug_barrier()
+        if pad_rows and HEADS_PADDED:
+            tl.atomic_add(dq_ptrs, dq, mask=(offs_m_curr[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim))
+        elif HEADS_PADDED:
+            tl.atomic_add(dq_ptrs, dq, mask=(offs_d[None, :] < headdim))
+        elif pad_rows:
+            tl.atomic_add(dq_ptrs, dq, mask=offs_m_curr[:, None] < actual_seqlen_q)
+        else:
+            tl.atomic_add(dq_ptrs, dq)
                 
             tl.debug_barrier()
         # Increment pointers
