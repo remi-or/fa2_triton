@@ -36,14 +36,16 @@ def load_fn(
     LIM_AXIS_0: tl.constexpr,
     LIM_AXIS_1: tl.constexpr,
 ):
-    if PAD_AXIS_0 and not PAD_AXIS_1: # rows only are padded
-        x = tl.load(ptrs, mask=offs_axis_0[:, None] < LIM_AXIS_0, other=0.0)
-    elif PAD_AXIS_0: # rows and heads are padded 
-        x = tl.load(ptrs, mask=(offs_axis_0[:, None] < LIM_AXIS_0) & (offs_axis_1[None, :] < LIM_AXIS_1), other=0.0)
-    elif not PAD_AXIS_1: # nothing is padded
-        x = tl.load(ptrs)
-    else: # only heads are padded
-        x = tl.load(ptrs, mask=offs_axis_1[None, :] < LIM_AXIS_1, other=0.0)
+    if PAD_AXIS_0:
+        if PAD_AXIS_1:
+            x = tl.load(ptrs, mask=(offs_axis_0[:, None] < LIM_AXIS_0) & (offs_axis_1[None, :] < LIM_AXIS_1), other=0.0)
+        else:
+            x = tl.load(ptrs, mask=offs_axis_0[:, None] < LIM_AXIS_0, other=0.0)
+    else:
+        if PAD_AXIS_1:
+            x = tl.load(ptrs, mask=offs_axis_1[None, :] < LIM_AXIS_1, other=0.0)
+        else:
+            x = tl.load(ptrs)
     return x
 
 @triton.jit

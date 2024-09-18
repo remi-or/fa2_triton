@@ -14,6 +14,13 @@ from src.forward.compute_row_blocks import compute_row_block
     ],
     key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "BIAS_TYPE", "VARLEN", "IS_CAUSAL", "BLOCK_HEADDIM"],
 )
+@triton.heuristics(
+    {
+        "EVEN_M": lambda args: args["seqlen_q"] % args["BLOCK_M"] == 0,
+        "EVEN_N": lambda args: args["seqlen_k"] % args["BLOCK_N"] == 0,
+        # "HEADS_NOT_PADDED": lambda args: args["headdim"] == args["BLOCK_HEADDIM"],
+    }
+)
 @triton.jit
 def _fwd_kernel(
     Q,
@@ -40,8 +47,8 @@ def _fwd_kernel(
     BIAS_TYPE: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
-    # EVEN_M: tl.constexpr,
-    # EVEN_N: tl.constexpr,
+    EVEN_M: tl.constexpr,
+    EVEN_N: tl.constexpr,
     PADDED_HEADS: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -49,12 +56,12 @@ def _fwd_kernel(
     
     softmax_scale = softmax_scale * 1.44269504089
     # Locate kernel inside the grid
-    start_m = tl.program_id(0) # current block in the Q matrix
+    i_start_m = tl.program_id(0) # current block in the Q matrix
     off_head_and_batch = tl.program_id(1)
     off_batch = off_head_and_batch // nheads
     off_head = off_head_and_batch % nheads
     # Initialize offsets
-    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_m = i_start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = tl.arange(0, BLOCK_N)
     offs_d = tl.arange(0, BLOCK_HEADDIM)
 
@@ -71,17 +78,13 @@ def _fwd_kernel(
         cu_seq_start_q = 0
         cu_seq_start_k = 0
 
-    # Check if the end of the sequence align with the blocks bounds
-    uneven_m = True # TODO (actual_seqlen_q % BLOCK_M != 0)
-    uneven_n = True # TODO (actual_seqlen_k % BLOCK_N != 0)
-
     # When in VARLEN mode, since we dimension the grid to be large enough for all sequences, the 
     # current sequence might have less rows than the current row (detemined through the grid).
-    if start_m * BLOCK_M >= actual_seqlen_q:
+    if i_start_m * BLOCK_M >= actual_seqlen_q:
         return
     
     fully_masked_lines = actual_seqlen_q - actual_seqlen_k if IS_CAUSAL else 0
-    if fully_masked_lines >= (start_m+1) * BLOCK_M:
+    if fully_masked_lines >= (i_start_m+1) * BLOCK_M:
         return
         
     # Initialize pointers to Q, K, V # TODO: check if this uses int32 or int64 math (check FA repo)
@@ -109,16 +112,17 @@ def _fwd_kernel(
     acc_o = tl.zeros([BLOCK_M, BLOCK_HEADDIM], dtype=tl.float32)
 
     # Load Q, which will stay in SRAM for the whole loop
+    pad_rows = (not EVEN_M) or (VARLEN and (i_start_m * BLOCK_M > actual_seqlen_q)) # this works while other bools fail. Why?
     q = load_fn(
         q_ptrs, 
         offs_m, offs_d, 
-        PAD_AXIS_0=uneven_m, PAD_AXIS_1=PADDED_HEADS, # TODO: fix
+        PAD_AXIS_0=pad_rows, PAD_AXIS_1=PADDED_HEADS, # TODO: fix
         LIM_AXIS_0=actual_seqlen_q, LIM_AXIS_1=headdim,
     )
 
     # Compute last visited column of KV which 
     if IS_CAUSAL:
-        end_n = min(actual_seqlen_k - actual_seqlen_q + (start_m + 1) * BLOCK_M, actual_seqlen_k)
+        end_n = min(actual_seqlen_k - actual_seqlen_q + (i_start_m + 1) * BLOCK_M, actual_seqlen_k)
         # For a seqlen_q >> seqlen_k, there migh be entire block skipped
         if end_n < 0:
             return
@@ -126,9 +130,10 @@ def _fwd_kernel(
         end_n = actual_seqlen_k
 
     # first_masked_block = min(start_m * BLOCK_M + 1 + actual_seqlen_k - actual_seqlen_q, end_n) if IS_CAUSAL else end_n
+    uneven_n = (actual_seqlen_k % BLOCK_N != 0)
     attention_padding = VARLEN & uneven_n
     if IS_CAUSAL:
-        first_masked_col = start_m * BLOCK_M + 1 + actual_seqlen_k - actual_seqlen_q
+        first_masked_col = i_start_m * BLOCK_M + 1 + actual_seqlen_k - actual_seqlen_q
     elif attention_padding:
         first_masked_col = actual_seqlen_k
     else:
@@ -165,7 +170,8 @@ def _fwd_kernel(
             next_start_n += BLOCK_N
     
     if next_start_n < end_n:
-        for start_n in range(next_start_n, end_n, BLOCK_N):
+        for I_start_n in range(next_start_n, end_n, BLOCK_N):
+            pad_cols = (not EVEN_N) or VARLEN # TODO: refine varlen side
             m_i, lse_i, acc_o = compute_row_block(
                 q,
                 m_i,
@@ -179,13 +185,13 @@ def _fwd_kernel(
                 softmax_scale,
                 stride_kn,
                 stride_vn,
-                start_n,
+                I_start_n,
                 actual_seqlen_q,
                 actual_seqlen_k,
                 headdim,
                 IS_CAUSAL=IS_CAUSAL,
                 MASKED=True,
-                PADDED_COLS=uneven_n,
+                PADDED_COLS=pad_cols,
                 PADDED_HEADS=PADDED_HEADS,
                 BLOCK_M=BLOCK_M,
                 BLOCK_N=BLOCK_N,
@@ -196,12 +202,12 @@ def _fwd_kernel(
     acc_o = acc_o * o_scale[:, None]
 
     # For seqlen_q >> seqlen_k, there might be entire lines masked, so we account for that
-    if fully_masked_lines > start_m * BLOCK_M:
+    if fully_masked_lines > i_start_m * BLOCK_M:
         acc_o = tl.where(offs_m[:, None] < fully_masked_lines, 0, acc_o)
 
     # rematerialize offsets to save registers (?)
-    start_m = tl.program_id(0)
-    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    i_start_m = tl.program_id(0)
+    offs_m = i_start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     # Write back l and m
     ## Q + off_batch * stride_qb + off_head * stride_qh + cu_seq_start_q * stride_qm
     lse_ptrs = Lse + off_head_and_batch * max_seqlen_q_rounded + offs_m
@@ -220,7 +226,7 @@ def _fwd_kernel(
     # if uneven_m and PADDED_HEADS: TODO
     if True:
         tl.store(out_ptrs, acc_o, mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim))
-    elif uneven_m:
+    elif pad_rows:
         tl.store(out_ptrs, acc_o, mask=offs_m[:, None] < actual_seqlen_q)
     elif PADDED_HEADS: # nothing is padded
         tl.store(out_ptrs, acc_o, mask=offs_d[None, :] < headdim)

@@ -121,7 +121,7 @@ def _flash_attn_forward(
         bias_type,
         IS_CAUSAL=causal,
         BLOCK_HEADDIM=BLOCK_HEADDIM,
-        PADDED_HEADS=True, # TODO
+        PADDED_HEADS=PADDED_HEADS,
     )
 
     # When in variable length mode, we need to unpack the packed tensors
