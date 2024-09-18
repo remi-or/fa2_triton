@@ -40,6 +40,7 @@ def retrieve_speedup_curve_data(
                 seqlen=seqlen.item(), 
                 head_dim=HIDDEN_DIM // NUM_HEADS, 
                 causal=causal,
+                use_attention=use_attention,
                 dtype=DTYPE,
             )
             # Accumulate or stop because of OOM

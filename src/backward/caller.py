@@ -55,6 +55,7 @@ def _flash_attn_backward(
     assert q.stride(-1) == k.stride(-1) == v.stride(-1) == o.stride(-1) == 1
 
     # Depending on attention_mask, switch to varlen
+    varlen_mode = varlen_mode and (batch_size > 1)
     if varlen_mode:
         # TODO: right now, seqlen is identical between Q and K. as that might change, we leave the doubles for later use
         # Compute padding-related statistics
