@@ -10,18 +10,19 @@ from einops import repeat
 from src.wrapper import lse_func
 from tests.utils import generate_test_data, generate_attention_mask, compare_tensors
 
-
 batch_size = 1
-num_heads = 9
-head_dim = 32
+num_heads = 2
 
-seqlen_q = 1024
-seqlen_k = 1024
+seqlen_q = 1
+seqlen_k = 239
+swap_seqlens = False
+use_attention = False
 
-use_attention= False
-
+head_dim = 64
 causal = False
-dtype = torch.float16
+dtype = torch.bfloat16
+
+forward_only = False
 
 
 if __name__ == "__main__":
@@ -56,6 +57,7 @@ if __name__ == "__main__":
         p = scores.softmax(dim=-1)
         log_p = p.log()
         lse_ref = (scores - log_p).mean(-1)
+    lse_ref *= 1.44269504089
 
     # Compute ours
     lse = lse_func(q, k, v, attn_mask, None, causal)

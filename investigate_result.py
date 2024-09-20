@@ -14,19 +14,23 @@ from tests.utils import generate_test_data, start_and_end, generate_attention_ma
 from src.other_implemenations.reference_implementation import attention_ref
 from tests.test_repeatability import _test_repeatability
 
+PLOT_HEAD_INDEX = 0
+
+# 4-9-3-799-False-False-111-True-dtype0                                                                                          [  4%]
 batch_size = 4
 num_heads = 9
 
-seqlen_q = 1
-seqlen_k = 239
-swap_seqlens = True
+seqlen_q = 3
+seqlen_k = 799
+swap_seqlens = False
 use_attention = False
 
-head_dim = 64
-causal = False
+head_dim = 111
+causal = True
 dtype = torch.float16
 
 forward_only = False
+
 
 
 if __name__ == "__main__":
@@ -39,6 +43,7 @@ if __name__ == "__main__":
 
     # Prepare data
     q, k, v, do = generate_test_data(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, dtype)
+    q_copy, k_copy, v_copy = q.clone(), k.clone(), v.clone()
     attn_mask = generate_attention_mask(q, True) if use_attention else None
 
     # Compute reference
@@ -75,35 +80,46 @@ if __name__ == "__main__":
     dq_pt, dk_pt, dv_pt = torch.autograd.grad(out_pt, (q, k, v), do, retain_graph=True)
 
     # Concatenate them along the number of heads
-    dq, dq_pt, dq_ref = [x.flatten(start_dim=1, end_dim=2) for x in (dq, dq_pt, dq_ref)]
-    dk, dk_pt, dk_ref = [x.flatten(start_dim=1, end_dim=2) for x in (dk, dk_pt, dk_ref)]
-    dv, dv_pt, dv_ref = [x.flatten(start_dim=1, end_dim=2) for x in (dv, dv_pt, dv_ref)]
+    if PLOT_HEAD_INDEX is None:
+        dq, dq_pt, dq_ref = [x.flatten(start_dim=1, end_dim=2) for x in (dq, dq_pt, dq_ref)]
+        dk, dk_pt, dk_ref = [x.flatten(start_dim=1, end_dim=2) for x in (dk, dk_pt, dk_ref)]
+        dv, dv_pt, dv_ref = [x.flatten(start_dim=1, end_dim=2) for x in (dv, dv_pt, dv_ref)]
+
+    assert (q == q_copy).all()
+    assert (k == k_copy).all()
+    assert (v == v_copy).all()
 
     # Display part of the results
-    print("Ours:", start_and_end(dq, 3))
-    print("Ref:", start_and_end(dq_ref, 3))
-    print("Pt:", start_and_end(dq_pt, 3))
+    print("Ours:", start_and_end(dk, 3))
+    print("Ref:", start_and_end(dk_ref, 3))
+    print("Pt:", start_and_end(dk_pt, 3))
 
     # Save a glimpse of the results
     fig, axs = plt.subplots(3, 3)
+    b = 0
     for i, dxs in enumerate([(dq, dq_pt, dq_ref), (dk, dk_pt, dk_ref), (dv, dv_pt, dv_ref)]):
-        axs[i, 0].imshow(dxs[0][-1].float().numpy(force=True))
-        axs[i, 1].imshow(dxs[1][-1].float().numpy(force=True))
-        axs[i, 2].imshow(dxs[0].sub(dxs[1]).abs()[-1].float().numpy(force=True))
+        if PLOT_HEAD_INDEX is None:
+            axs[i, 0].imshow(dxs[0][b].float().numpy(force=True))
+            axs[i, 1].imshow(dxs[1][b].float().numpy(force=True))
+            axs[i, 2].imshow(dxs[0].sub(dxs[1]).abs()[b].float().numpy(force=True))
+        else:
+            axs[i, 0].imshow(dxs[0][b, :, PLOT_HEAD_INDEX].float().numpy(force=True))
+            axs[i, 1].imshow(dxs[1][b, :, PLOT_HEAD_INDEX].float().numpy(force=True))
+            axs[i, 2].imshow(dxs[0].sub(dxs[1]).abs()[b, :, PLOT_HEAD_INDEX].float().numpy(force=True))
         # axs[i, 2].imshow(dxs[2][-1].numpy(force=True))
     fig.savefig("__tmp__.png")
 
-    _test_repeatability(
-        repeats=5, 
-        batch_size=batch_size, 
-        num_heads=num_heads, 
-        seqlen_q=seqlen_q, 
-        seqlen_k=seqlen_k, 
-        head_dim=head_dim, 
-        attention=use_attention, 
-        causal=causal, 
-        dtype=dtype,
-    )
+    # _test_repeatability(
+    #     repeats=10, 
+    #     batch_size=batch_size, 
+    #     num_heads=num_heads, 
+    #     seqlen_q=seqlen_q, 
+    #     seqlen_k=seqlen_k, 
+    #     head_dim=head_dim, 
+    #     attention=use_attention, 
+    #     causal=causal, 
+    #     dtype=dtype,
+    # )
 
     # Compare results
     compare_results_fa(q, k, v, do, out, out_ref, out_pt)
@@ -139,4 +155,35 @@ if __name__ == "__main__":
 # causal = False
 # dtype = torch.float16
 
+# [4-9-1-239-True-False-40-False-dtype0] FAILED                                                                                              [  5%]
+# [4-9-1-239-True-False-32-False-dtype0] FAILED                                                                                              [  5%]
+
 #######################################
+
+# [4-9-1-239-False-False-64-False-dtype1] FAILED                                                                                             [  2%]
+# [4-9-1-239-False-False-64-False-dtype1] - AssertionError: Gradient of K
+# [4-9-1-239-True-False-32-False-dtype0] - AssertionError: Gradient of V
+# [4-9-1-239-True-False-40-False-dtype0] - AssertionError: Gradient of V
+# [4-9-1-239-True-False-59-False-dtype0] - AssertionError: Gradient of V
+# [4-9-1-239-True-False-64-False-dtype0] - AssertionError: Gradient of V
+# [4-9-1-239-True-False-80-False-dtype0] - AssertionError: Gradient of V
+# [4-9-1-239-True-False-96-False-dtype0] - AssertionError: Gradient of V
+# [4-9-1-239-True-False-128-True-dtype0] - AssertionError: Gradient of V
+# [4-9-3-799-False-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-3-799-True-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-127-512-False-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-127-512-True-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-127-513-False-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-127-513-True-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-113-203-False-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-113-203-True-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-128-217-False-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-128-217-True-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-113-211-False-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-113-211-True-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-108-256-False-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-108-256-True-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-256-512-False-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-256-512-True-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-1023-1024-False-False-111-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-1023-1024-True-False-111-True-dtype0] - AssertionError: Gradient of Q
