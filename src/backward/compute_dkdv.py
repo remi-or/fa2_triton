@@ -25,6 +25,7 @@ def _compute_single_block_dkdv(
     actual_seqlen_k,
     fully_masked_lines,
     headdim,
+    MASKED: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     PAD_ROWS: tl.constexpr,
     PAD_COLS: tl.constexpr,
@@ -49,23 +50,25 @@ def _compute_single_block_dkdv(
     # Recompute P_ij = softmax(qk, dim=-1).T
     qk = tl.dot(q, tl.trans(k))
     
-    # Attention mask
-    if PAD_COLS:  
-        qk = tl.where(offs_n[None, :] < actual_seqlen_k, qk, float("-inf"))
-    # Causal mask
-    if IS_CAUSAL:
-        qk = tl.where(
-            offs_m_curr[:, None] >= ((offs_n - actual_seqlen_k + actual_seqlen_q)[None, :]), 
-            qk, 
-            float("-inf"),
-        ) # TODO: fuse those? might not work (old com)
+    # Attention and causal mask
+    offs_n_causal = (offs_n - actual_seqlen_k + actual_seqlen_q)
+    if MASKED:
+        if PAD_COLS:
+            if IS_CAUSAL:
+                qk = tl.where(tl.minimum(actual_seqlen_q - 1, offs_m_curr)[:, None] >= offs_n_causal[None, :], qk, float("-inf"))
+            else:
+                qk = tl.where(actual_seqlen_q - 1 >= offs_n_causal[None, :], qk, float("-inf"))
+        elif IS_CAUSAL:
+            qk = tl.where(offs_m_curr[:, None] >= offs_n_causal[None, :], qk, float("-inf")) # TODO: fuse those? might not work (old com)
+    tl.debug_barrier()
 
     # Load the LogSumExp and retrieve P
     p = tl.exp2(qk * (softmax_scale * 1.44269504089) - lse_i[:, None])
     
     # Account for fully masked lines
-    if fully_masked_lines > 0:
-        p = tl.where(offs_m_curr[:, None] < fully_masked_lines, 0, p)
+    if MASKED:
+        if fully_masked_lines > 0:
+            p = tl.where(offs_m_curr[:, None] < fully_masked_lines, 0, p)
 
     # Load the gradient of O
     do = load_fn(do_ptrs, offs_m_curr, offs_d, PAD_ROWS, HEADS_PADDED, actual_seqlen_q, headdim)
@@ -118,6 +121,7 @@ def _compute_column_blocks_dkdv(
     # This fuction goes through a column, so it always ends at m = actual_seqlen_q but can start early due to causality
     I_begin_m = max(I_start_n + actual_seqlen_q - actual_seqlen_k, 0) if IS_CAUSAL else 0
     I_begin_m = (I_begin_m // BLOCK_M) * BLOCK_M 
+    I_end_m = actual_seqlen_q
 
     fully_masked_lines = (actual_seqlen_q - actual_seqlen_k) if IS_CAUSAL else 0
     # Since we are in a grid dimensionned to fit max_seqlen_q, some blocks may exist early
@@ -154,34 +158,70 @@ def _compute_column_blocks_dkdv(
     )
 
     # Loop over rows to compute dk and dv
-    # TODO: break loop to avoid useless padding of rows and causal and fully_masked lines
-    for I_start_m in range(I_begin_m, actual_seqlen_q, BLOCK_M): 
-        I_start_m = tl.multiple_of(I_start_m, BLOCK_M)
-        dk, dv = _compute_single_block_dkdv(
-            I_start_m,
-            k,
-            v,
-            dk, 
-            dv,
-            LSE,
-            D,
-            offs_m,
-            offs_n,
-            offs_d,
-            q_ptrs,
-            do_ptrs,
-            softmax_scale,
-            stride_qm,
-            stride_dom,
-            actual_seqlen_q,
-            actual_seqlen_k,
-            fully_masked_lines,
-            headdim,
-            PAD_ROWS=True,
-            PAD_COLS=PAD_COLS,
-            IS_CAUSAL=IS_CAUSAL,
-            HEADS_PADDED=HEADS_PADDED,
-        )
+    first_full_row = max(0, I_start_n + BLOCK_N - 1 + actual_seqlen_q - actual_seqlen_k)
+    num_masked_blocks = ((first_full_row - I_begin_m + BLOCK_M - 1) // BLOCK_M) if IS_CAUSAL else 0
+    I_next_start_m = I_begin_m
+
+    # Partially masked blocks
+    if num_masked_blocks > 0:
+        for _ in range(0, num_masked_blocks):
+            dk, dv = _compute_single_block_dkdv(
+                I_next_start_m,
+                k,
+                v,
+                dk, 
+                dv,
+                LSE,
+                D,
+                offs_m,
+                offs_n,
+                offs_d,
+                q_ptrs,
+                do_ptrs,
+                softmax_scale,
+                stride_qm,
+                stride_dom,
+                actual_seqlen_q,
+                actual_seqlen_k,
+                fully_masked_lines,
+                headdim,
+                MASKED=True,
+                IS_CAUSAL=IS_CAUSAL,
+                PAD_ROWS=True, # TODO: fix this
+                PAD_COLS=PAD_COLS,
+                HEADS_PADDED=HEADS_PADDED,
+            )
+            I_next_start_m += BLOCK_M
+    
+    # Full blocks
+    if I_next_start_m < I_end_m:
+        for I_start_m in range(I_next_start_m, I_end_m, BLOCK_M):
+            dk, dv = _compute_single_block_dkdv(
+                I_start_m,
+                k,
+                v,
+                dk, 
+                dv,
+                LSE,
+                D,
+                offs_m,
+                offs_n,
+                offs_d,
+                q_ptrs,
+                do_ptrs,
+                softmax_scale,
+                stride_qm,
+                stride_dom,
+                actual_seqlen_q,
+                actual_seqlen_k,
+                fully_masked_lines,
+                headdim,
+                MASKED=False,
+                IS_CAUSAL=IS_CAUSAL,
+                PAD_ROWS=True, # TODO: fix this
+                PAD_COLS=PAD_COLS,
+                HEADS_PADDED=HEADS_PADDED,
+            )
 
     # Store dk and dv
     if HEADS_PADDED:

@@ -141,8 +141,8 @@ def _flash_attn_backward(
         cum_seqlens_k,
         max_seqlen_q_rounded,
         head_dim,
-        max_seqlen_q // 64,
-        max_seqlen_k // 64,  # key for triton cache (limit number of compilations)
+        max_seqlen_q // 32,
+        max_seqlen_k // 32,  # key for triton cache (limit number of compilations)
         # Can't use kwargs here because triton autotune expects key to be args, not kwargs
         # IS_CAUSAL=causal, BLOCK_HEADDIM=d,
         VARLEN=varlen_mode,

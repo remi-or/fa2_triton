@@ -16,8 +16,13 @@ from src.forward.compute_row_blocks import compute_row_block
         triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=4, num_stages=1),
         triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=8, num_stages=1),
     ],
-    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "VARLEN", "IS_CAUSAL", "BLOCK_HEADDIM"],
+    # configs=[
+    #     triton.Config({"BLOCK_M": block, "BLOCK_N": block}, num_warps=num_warps, num_stages=num_stages)
+    #     for block, num_warps, num_stages in product([32, 64, 128, 256], [4, 8], [0, 1])
+    # ],
+    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"],
 )
+
 @triton.heuristics(
     {
         "EVEN_M": lambda args: args["seqlen_q"] % args["BLOCK_M"] == 0,

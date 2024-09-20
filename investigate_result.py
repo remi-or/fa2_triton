@@ -16,16 +16,16 @@ from tests.test_repeatability import _test_repeatability
 
 PLOT_HEAD_INDEX = None
 
-batch_size = 1
+batch_size = 4
 num_heads = 9
 
-seqlen_q = 1
-seqlen_k = 239
+seqlen_q = 127
+seqlen_k = 513
 swap_seqlens = False
-use_attention = False
+use_attention = True
 
 head_dim = 32
-causal = False
+causal = True
 dtype = torch.float16
 
 forward_only = False

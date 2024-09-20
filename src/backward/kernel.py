@@ -1,33 +1,51 @@
 import triton
+from triton import Config
 import triton.language as tl
+from typing import List, Dict, Any
 
 import math
 from src.backward.compute_dkdv import _compute_column_blocks_dkdv
 from src.backward.compute_dq import _compute_row_blocks_dq
 
-def init_to_zero(name):
-    return lambda nargs: nargs[name].zero_()
+
+MIN_B = 16
+
+def early_config_prune_bwd_kernel(
+    configs: List[Config],
+    named_args: Dict[str, Any],
+    **kwargs,
+) -> List[Config]:
+    # Remove the configs where BLOCK_ > seqlen_
+    kept_configs = []
+    for cfg in configs:
+        block_m_too_large = max(cfg.kwargs["BLOCK_M1"], cfg.kwargs["BLOCK_M2"]) > named_args["seqlen_q"]
+        block_n_too_large = max(cfg.kwargs["BLOCK_N1"], cfg.kwargs["BLOCK_N2"]) > named_args["seqlen_k"]
+        if not (block_m_too_large or block_n_too_large):
+            kept_configs.append(cfg)
+    # If no config is left, go for the minimal config
+    if configs:
+        return configs
+    return [Config({"BLOCK_M1": MIN_B, "BLOCK_N1": MIN_B, "BLOCK_M2": MIN_B, "BLOCK_N2": MIN_B}, num_warps=4, num_stages=0)]
+
 
 
 @triton.autotune(
     configs=[
-        triton.Config({"BLOCK_M1": 128, "BLOCK_N1": 64, "BLOCK_M2": 64, "BLOCK_N2": 128}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_M1": 128, "BLOCK_N1": 64, "BLOCK_M2": 64, "BLOCK_N2": 128}, num_warps=8, num_stages=1),
-#         # triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=4, num_stages=1), # TODO: change seqlen rounded
-#         # triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=8, num_stages=1),
-#         # Other configs seem to give wrong results when seqlen_q % 128 != 0, disabling them for now
-#         # # Kernel is buggy (give wrong result) if we set BLOCK_m=128, BLOCK_n=64, num_warps=*4*
-#         # triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False}, num_warps=8, num_stages=1, pre_hook=init_to_zero('DQ')),
-#         # triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True}, num_warps=8, num_stages=1, pre_hook=init_to_zero('DQ')),
-#         # triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False}, num_warps=4, num_stages=1, pre_hook=init_to_zero('DQ')),
-#         # triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True}, num_warps=4, num_stages=1, pre_hook=init_to_zero('DQ')),
+        Config({"BLOCK_M1": MIN_B, "BLOCK_N1": MIN_B, "BLOCK_M2": MIN_B, "BLOCK_N2": MIN_B}, num_warps=4, num_stages=0),
+        Config({"BLOCK_M1": 32, "BLOCK_N1": 16, "BLOCK_M2": 16, "BLOCK_N2": 32}, num_warps=4, num_stages=0),
+        Config({"BLOCK_M1": 32, "BLOCK_N1": 64, "BLOCK_M2": 64, "BLOCK_N2": 32}, num_warps=4, num_stages=0),
+        Config({"BLOCK_M1": 64, "BLOCK_N1": 64, "BLOCK_M2": 64, "BLOCK_N2": 64}, num_warps=4, num_stages=0),
+        Config({"BLOCK_M1": 64, "BLOCK_N1": 128, "BLOCK_M2": 128, "BLOCK_N2": 64}, num_warps=4, num_stages=0),
     ],
-    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"],
+    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"], # TODO: add dtype
+    prune_configs_by={"early_config_prune": early_config_prune_bwd_kernel},
 )
 @triton.heuristics(
     {
         "EVEN_M1": lambda args: args["seqlen_q"] % args["BLOCK_M1"] == 0,
         "EVEN_N1": lambda args: args["seqlen_k"] % args["BLOCK_N1"] == 0,
+        "EVEN_M2": lambda args: args["seqlen_q"] % args["BLOCK_M2"] == 0,
+        "EVEN_N2": lambda args: args["seqlen_k"] % args["BLOCK_N2"] == 0,
         "HEADS_PADDED": lambda args: args["headdim"] != args["BLOCK_HEADDIM"],
         "NUM_BLOCKS_KV": lambda args: math.ceil(args["seqlen_k"] /  args["BLOCK_N1"]),
     }
@@ -70,6 +88,8 @@ def _bwd_kernel(
     NUM_BLOCKS_KV: tl.constexpr,
     EVEN_M1: tl.constexpr,
     EVEN_N1: tl.constexpr,
+    EVEN_M2: tl.constexpr,
+    EVEN_N2: tl.constexpr,
     HEADS_PADDED: tl.constexpr,
 ):
     # Locate kernel inside the grid
@@ -107,7 +127,7 @@ def _bwd_kernel(
     # Case: this block works on dk and dv
     if pid < NUM_BLOCKS_KV:
         i_start_n = pid
-        pad_cols = (not EVEN_N1) or (VARLEN and (i_start_n * BLOCK_N1 > actual_seqlen_k)) # this works while other bools fail. Why?
+        pad_cols = (not EVEN_N1) or (VARLEN and ((i_start_n + 1) * BLOCK_N1 > actual_seqlen_k)) # this works while other bools fail. Why?
         _compute_column_blocks_dkdv(
             i_start_n * BLOCK_N1,
             Q, K, V, DO, DK, DV, LSE, D,
@@ -115,20 +135,22 @@ def _bwd_kernel(
             stride_qm, stride_kn, stride_vn, stride_dom, stride_dkn, stride_dvn,
             actual_seqlen_q, actual_seqlen_k, headdim,
             IS_CAUSAL=IS_CAUSAL,
-            PAD_COLS=True, HEADS_PADDED=HEADS_PADDED,
+            PAD_COLS=pad_cols, HEADS_PADDED=HEADS_PADDED,
             BLOCK_M=BLOCK_M1, BLOCK_N=BLOCK_N1, BLOCK_HEADDIM=BLOCK_HEADDIM,
         )
 
     # Case: this block works on dq      
     else:
         i_start_m = pid - NUM_BLOCKS_KV
+        pad_rows = (not EVEN_M2) or (VARLEN and ((i_start_m + 1) * BLOCK_M2 > actual_seqlen_q)) # this works while other bools fail. Why?
         _compute_row_blocks_dq(
             i_start_m * BLOCK_M2,
             Q, K, V, DO, DQ, LSE, D,
             softmax_scale,
             stride_qm, stride_kn, stride_vn, stride_dom, stride_dqm, 
             actual_seqlen_q, actual_seqlen_k, headdim, 
-            IS_CAUSAL=IS_CAUSAL,
-            PAD_ROWS=True, HEADS_PADDED=HEADS_PADDED,
+            VARLEN=VARLEN, IS_CAUSAL=IS_CAUSAL,
+            PAD_ROWS=pad_rows, HEADS_PADDED=HEADS_PADDED,
             BLOCK_M=BLOCK_M2, BLOCK_N=BLOCK_N2, BLOCK_HEADDIM=BLOCK_HEADDIM,
+            EVEN_N=EVEN_N2,
         )

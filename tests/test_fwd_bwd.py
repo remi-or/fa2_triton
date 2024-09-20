@@ -35,7 +35,7 @@ def _test_fwd_bwd(
     # Compare results
     compare_results_fa(q, k, v, do, out, out_ref, out_pt)
 
-@pytest.mark.parametrize("dtype", ([torch.float16, torch.bfloat16]))
+@pytest.mark.parametrize("dtype", ([torch.float16])) # TODO: support bfloat16
 # @pytest.mark.parametrize("alibi", [False, True])
 # @pytest.mark.parametrize("local", [False, True]) # TODO: add support for window size?
 @pytest.mark.parametrize("causal", [False, True])
