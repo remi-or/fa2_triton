@@ -14,19 +14,19 @@ from tests.utils import generate_test_data, start_and_end, generate_attention_ma
 from src.other_implemenations.reference_implementation import attention_ref
 from tests.test_repeatability import _test_repeatability
 
-PLOT_HEAD_INDEX = 0
+PLOT_HEAD_INDEX = None
 
-# 4-9-3-799-False-False-111-True-dtype0                                                                                          [  4%]
-batch_size = 4
+
+batch_size = 1
 num_heads = 9
 
-seqlen_q = 3
-seqlen_k = 799
-swap_seqlens = False
+seqlen_q = 1
+seqlen_k = 239
+swap_seqlens = True
 use_attention = False
 
-head_dim = 111
-causal = True
+head_dim = 128
+causal = False
 dtype = torch.float16
 
 forward_only = False
@@ -159,31 +159,3 @@ if __name__ == "__main__":
 # [4-9-1-239-True-False-32-False-dtype0] FAILED                                                                                              [  5%]
 
 #######################################
-
-# [4-9-1-239-False-False-64-False-dtype1] FAILED                                                                                             [  2%]
-# [4-9-1-239-False-False-64-False-dtype1] - AssertionError: Gradient of K
-# [4-9-1-239-True-False-32-False-dtype0] - AssertionError: Gradient of V
-# [4-9-1-239-True-False-40-False-dtype0] - AssertionError: Gradient of V
-# [4-9-1-239-True-False-59-False-dtype0] - AssertionError: Gradient of V
-# [4-9-1-239-True-False-64-False-dtype0] - AssertionError: Gradient of V
-# [4-9-1-239-True-False-80-False-dtype0] - AssertionError: Gradient of V
-# [4-9-1-239-True-False-96-False-dtype0] - AssertionError: Gradient of V
-# [4-9-1-239-True-False-128-True-dtype0] - AssertionError: Gradient of V
-# [4-9-3-799-False-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-3-799-True-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-127-512-False-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-127-512-True-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-127-513-False-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-127-513-True-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-113-203-False-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-113-203-True-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-128-217-False-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-128-217-True-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-113-211-False-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-113-211-True-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-108-256-False-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-108-256-True-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-256-512-False-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-256-512-True-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-1023-1024-False-False-111-True-dtype0] - AssertionError: Gradient of Q
-# [4-9-1023-1024-True-False-111-True-dtype0] - AssertionError: Gradient of Q
