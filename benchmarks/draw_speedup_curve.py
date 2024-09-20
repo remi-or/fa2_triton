@@ -1,4 +1,5 @@
 import sys
+import os
 import os.path as osp
 import torch
 import matplotlib.pyplot as plt
@@ -52,6 +53,8 @@ def retrieve_speedup_curve_data(
 
 
 if __name__ == "__main__":
+    os.environ["TRITON_PRINT_AUTOTUNING"]="1"
+    
     fig, axs = plt.subplots(3, 1, sharex=True, figsize=(6, 12))   
     axs[0].set_title("Forward pass")
     axs[1].set_title("Backward pass")

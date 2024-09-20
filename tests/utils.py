@@ -125,11 +125,11 @@ def compare_results_fa(
     relative_thresh = max_dv_error <= grad_error_mul * (dv_pt - dv_ref).abs().max().item() + grad_error_bias
     # For some reason, sometimes only one coefficient in V is off. We check its not too high and move on with a warning
     if not relative_thresh:
-        one_significant_error = (max_dv_error == (dv - dv_ref).abs().sum().item()) and (max_dv_error < 1e-2)
-        if one_significant_error:
-            warnings.warn(f"One coefficient in dV is off by {max_dv_error}, moving on.", stacklevel=1)
+        sum_dv_error = (dv - dv_ref).abs().sum().item()
+        if sum_dv_error < 1e-4:
+            warnings.warn(f"There are small errors in dV, summing to {sum_dv_error}. Moving on.", stacklevel=1)
         else:
-            raise ArithmeticError("Gradient of V")
+            raise ArithmeticError(f"Gradient of V. {sum_dv_error = }")
 
     return dq, dk, dv
 

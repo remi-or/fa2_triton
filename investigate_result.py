@@ -16,16 +16,15 @@ from tests.test_repeatability import _test_repeatability
 
 PLOT_HEAD_INDEX = None
 
-
 batch_size = 1
 num_heads = 9
 
 seqlen_q = 1
 seqlen_k = 239
-swap_seqlens = True
+swap_seqlens = False
 use_attention = False
 
-head_dim = 128
+head_dim = 32
 causal = False
 dtype = torch.float16
 
@@ -34,6 +33,7 @@ forward_only = False
 
 
 if __name__ == "__main__":
+    os.environ["TRITON_PRINT_AUTOTUNING"]="1"
     # os.environ["TRITON_INTERPRET"] = "1"
 
     if swap_seqlens:
