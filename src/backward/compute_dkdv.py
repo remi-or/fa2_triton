@@ -159,7 +159,10 @@ def _compute_column_blocks_dkdv(
 
     # Loop over rows to compute dk and dv
     first_full_row = max(0, I_start_n + BLOCK_N - 1 + actual_seqlen_q - actual_seqlen_k)
-    num_masked_blocks = ((first_full_row - I_begin_m + BLOCK_M - 1) // BLOCK_M) if IS_CAUSAL else 0
+    first_full_block = BLOCK_M * (
+        (min(first_full_row, actual_seqlen_q) + BLOCK_M - 1) // BLOCK_M
+    )
+    num_masked_blocks = (first_full_block - I_begin_m) // BLOCK_M if IS_CAUSAL else 0
     I_next_start_m = I_begin_m
 
     # Partially masked blocks

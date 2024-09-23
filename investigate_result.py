@@ -16,13 +16,13 @@ from tests.test_repeatability import _test_repeatability
 
 PLOT_HEAD_INDEX = None
 
-batch_size = 1
-num_heads = 3
+batch_size = 4
+num_heads = 9
 
-seqlen_q = 256
-seqlen_k = 108
+seqlen_q = 127
+seqlen_k = 513
 swap_seqlens = False
-use_attention = False
+use_attention = True
 
 head_dim = 32
 causal = True
@@ -159,3 +159,11 @@ if __name__ == "__main__":
 # [4-9-1-239-True-False-32-False-dtype0] FAILED                                                                                              [  5%]
 
 #######################################
+
+# [4-9-1-239-True-False-40-False-dtype0] - ArithmeticError: Gradient of V. sum_dv_error = 0.005859375
+# [4-9-1-239-True-False-64-False-dtype0] - ArithmeticError: Gradient of V. sum_dv_error = 0.001953125
+# [4-9-1-239-True-False-96-False-dtype0] - ArithmeticError: Gradient of V. sum_dv_error = 0.0009765625
+# [4-9-127-513-False-True-32-True-dtype0] - AssertionError: Gradient of Q
+# [4-9-108-256-True-False-32-True-dtype0] - AssertionError: Gradient of K
+# [4-9-108-256-True-False-40-True-dtype0] - AssertionError: Gradient of K
+# [4-9-108-256-True-False-80-True-dtype0] - AssertionError: Gradient of K

@@ -22,9 +22,9 @@ def _flash_attn_backward(
     softmax_scale: Optional[float] = None,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     
-    varlen_mode = (attention_mask is not None)
-    if varlen_mode:
+    if attention_mask is not None:
         assert q.size(1) == k.size(1), "Attention mask is not supported with seqlen_q != seqlen_k"
+        varlen_mode = (attention_mask.size(0) > 1)
         useless_padding = attention_mask.size(1) - attention_mask.sum(-1).max().item()
         if useless_padding > 0:
             dO = dO[:, :-useless_padding]
@@ -34,6 +34,7 @@ def _flash_attn_backward(
             attention_mask = attention_mask[:, :-useless_padding]
             o = o[:, :-useless_padding]
     else:
+        varlen_mode = False
         useless_padding = 0
 
     # Retrieve and check shapes
@@ -47,7 +48,7 @@ def _flash_attn_backward(
     assert q.stride(-1) == k.stride(-1) == v.stride(-1) == o.stride(-1) == 1
 
     # Depending on attention_mask, switch to varlen
-    if varlen_mode and (batch_size > 1):
+    if varlen_mode:
         # Compute padding-related statistics
         cum_seqlens_q = torch.zeros(size=(attention_mask.size(0)+1,), device=attention_mask.device, dtype=torch.int32)
         cum_seqlens_q[1:] = attention_mask.sum(dim=1).cumsum(0) 
@@ -133,7 +134,6 @@ def _flash_attn_backward(
         head_dim,
         max_seqlen_q // 32,
         max_seqlen_k // 32,  # key for triton cache (limit number of compilations)
-        # Can't use kwargs here because triton autotune expects key to be args, not kwargs
         VARLEN=varlen_mode,
         IS_CAUSAL=causal,
         BLOCK_HEADDIM=BLOCK_HEADDIM,

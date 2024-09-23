@@ -11,16 +11,16 @@ from src.wrapper import lse_func
 from tests.utils import generate_test_data, generate_attention_mask, compare_tensors
 
 batch_size = 1
-num_heads = 2
+num_heads = 3
 
-seqlen_q = 1
-seqlen_k = 239
+seqlen_q = 256
+seqlen_k = 108
 swap_seqlens = False
 use_attention = False
 
-head_dim = 64
-causal = False
-dtype = torch.bfloat16
+head_dim = 32
+causal = True
+dtype = torch.float16
 
 forward_only = False
 
