@@ -1,18 +1,18 @@
-from typing import Optional, Tuple
-from torch import Tensor
-
-import torch
 import os
+
 import matplotlib.pyplot as plt
-import sys
+import torch
 
-root = os.path.dirname(os.path.dirname(__file__))
-sys.path.append(root)
-
-from src.wrapper import flash_attn_func
-from tests.utils import generate_test_data, start_and_end, generate_attention_mask, compare_results_fa, compare_tensors
 from src.other_implemenations.reference_implementation import attention_ref
+from src.wrapper import flash_attn_func
 from tests.test_repeatability import _test_repeatability
+from tests.utils import (
+    compare_results_fa,
+    compare_tensors,
+    generate_attention_mask,
+    generate_test_data,
+    start_and_end,
+)
 
 PLOT_HEAD_INDEX = None
 
@@ -53,7 +53,7 @@ if __name__ == "__main__":
         q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, causal=causal, upcast=False, reorder_ops=True
     )
     # Compute ours
-    out = flash_attn_func(q, k, v, attn_mask, None, causal)
+    out = flash_attn_func(q, k, v, attn_mask, causal)
 
     if forward_only:
         # Display part of the results
@@ -109,17 +109,17 @@ if __name__ == "__main__":
         # axs[i, 2].imshow(dxs[2][-1].numpy(force=True))
     fig.savefig("__tmp__.png")
 
-    # _test_repeatability(
-    #     repeats=10, 
-    #     batch_size=batch_size, 
-    #     num_heads=num_heads, 
-    #     seqlen_q=seqlen_q, 
-    #     seqlen_k=seqlen_k, 
-    #     head_dim=head_dim, 
-    #     attention=use_attention, 
-    #     causal=causal, 
-    #     dtype=dtype,
-    # )
+    _test_repeatability(
+        repeats=10,
+        batch_size=batch_size,
+        num_heads=num_heads,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        attention=use_attention,
+        causal=causal,
+        dtype=dtype,
+    )
 
     # Compare results
     compare_results_fa(q, k, v, do, out, out_ref, out_pt)

@@ -30,14 +30,12 @@ def _fwd_kernel(
     Q,
     K,
     V,
-    Bias,
     Out,
     Lse,
     softmax_scale,
     stride_qb, stride_qh, stride_qm, # Q stride for the batch, head and sequence axis (sequence subscript is m for rows)
     stride_kb, stride_kh, stride_kn, # Same for K (sequence subscript is n for cols)
     stride_vb, stride_vh, stride_vn, # Same for V (sequence subscript is n for cols)
-    stride_bb, stride_bh, stride_bm, # Same for bias (sequence subscript is m for rows)
     stride_ob, stride_oh, stride_om, # Same for O (sequence subscript is m for rows)
     nheads,
     seqlen_q,
@@ -48,7 +46,6 @@ def _fwd_kernel(
     CACHE_KEY_SEQLEN_Q,
     CACHE_KEY_SEQLEN_K,
     VARLEN: tl.constexpr,
-    BIAS_TYPE: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
     EVEN_M: tl.constexpr,
@@ -98,17 +95,6 @@ def _fwd_kernel(
     k_ptrs = (offseted_K + (offs_n[:, None] * stride_kn + offs_d[None, :]))
     offseted_V = V + off_batch * stride_vb + off_head * stride_vh + cu_seq_start_k * stride_vn
     v_ptrs = (offseted_V + (offs_n[:, None] * stride_vn + offs_d[None, :]))
-
-    # Bias
-    if BIAS_TYPE == "vector":
-        b_ptrs = Bias + off_batch * stride_bb + off_head * stride_bh + offs_n
-    elif BIAS_TYPE == "matrix":
-        b_ptrs = (
-            Bias
-            + off_batch * stride_bb
-            + off_head * stride_bh
-            + (offs_m[:, None] * stride_bm + offs_n[None, :])
-        )
     
     # Initialize pointers to m and l
     lse_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")

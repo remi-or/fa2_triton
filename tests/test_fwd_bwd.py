@@ -1,15 +1,16 @@
 """Here, we test if the kernel when there is no attention mask and seqlen_q != seqlen_k."""
 
-import sys
 import os.path as osp
+import sys
+
 sys.path.append(osp.dirname(osp.dirname(__file__)))
 
-import torch
 import pytest
+import torch
 
-from src.wrapper import flash_attn_func
-from tests.utils import generate_test_data, compare_results_fa, generate_attention_mask
 from src.other_implemenations.reference_implementation import attention_ref
+from src.wrapper import flash_attn_func
+from tests.utils import compare_results_fa, generate_attention_mask, generate_test_data
 
 
 def _test_fwd_bwd(
@@ -31,7 +32,7 @@ def _test_fwd_bwd(
     out_pt = attention_ref(q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, causal=causal, 
                            upcast=False, reorder_ops=True)
     # Compute ours
-    out = flash_attn_func(q, k, v, attn_mask, None, causal)
+    out = flash_attn_func(q, k, v, attn_mask, causal)
     # Compare results
     compare_results_fa(q, k, v, do, out, out_ref, out_pt)
 
