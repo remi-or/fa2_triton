@@ -1,25 +1,13 @@
-import math
 from typing import Tuple, Optional
-
+import math
 import torch
 from torch import Tensor
+import torch.nn.functional as F
 import triton
 
 from src.utils import attention_pack, attention_unpack
 from src.backward.compute_delta import _compute_delta
 from src.backward.kernel import _bwd_kernel
-
-
-
-# Disabling autotune for now, set num_warps=4 if headdim=64 and num_warps=8 if headdim=128
-# @triton.autotune(
-#     configs=[
-#         triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=4, num_stages=1),
-#         # This config has a race condition when EVEN_M == False, disabling it for now.
-#         # triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=1),
-#     ],
-#     key=['CACHE_KEY_SEQLEN_Q', 'CACHE_KEY_SEQLEN_K', 'BIAS_TYPE', 'IS_CAUSAL', 'BLOCK_HEADDIM']
-# )
 
 
 def _flash_attn_backward(
@@ -29,15 +17,24 @@ def _flash_attn_backward(
     v: Tensor, # [batch_size, seqlen_k, num_heads, head_dim]
     attention_mask: Optional[Tensor], # [batch_size, seqlen_qk]
     o: Tensor, # [batch_size, seqlen_q, num_heads, head_dim]
-    lse: Tensor, # [batch_size, seqlen_q, num_heads]
+    lse: Tensor, # [batch_size, num_heads, max_seqlen_q_rounded]
     causal: bool = False, 
     softmax_scale: Optional[float] = None,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     
-    # Currently, variable length (varlen) mode is mutually exclusive with attention masking (TODO)
     varlen_mode = (attention_mask is not None)
     if varlen_mode:
         assert q.size(1) == k.size(1), "Attention mask is not supported with seqlen_q != seqlen_k"
+        useless_padding = attention_mask.size(1) - attention_mask.sum(-1).max().item()
+        if useless_padding > 0:
+            dO = dO[:, :-useless_padding]
+            q = q[:, :-useless_padding]
+            k = k[:, :-useless_padding]
+            v = v[:, :-useless_padding]
+            attention_mask = attention_mask[:, :-useless_padding]
+            o = o[:, :-useless_padding]
+    else:
+        useless_padding = 0
 
     # Retrieve and check shapes
     dO = dO.contiguous() if dO.stride(-1) != 1 else dO
@@ -50,8 +47,7 @@ def _flash_attn_backward(
     assert q.stride(-1) == k.stride(-1) == v.stride(-1) == o.stride(-1) == 1
 
     # Depending on attention_mask, switch to varlen
-    varlen_mode = varlen_mode and (batch_size > 1)
-    if varlen_mode:
+    if varlen_mode and (batch_size > 1):
         # Compute padding-related statistics
         cum_seqlens_q = torch.zeros(size=(attention_mask.size(0)+1,), device=attention_mask.device, dtype=torch.int32)
         cum_seqlens_q[1:] = attention_mask.sum(dim=1).cumsum(0) 
@@ -100,16 +96,10 @@ def _flash_attn_backward(
         max_seqlen_q_rounded,
         cum_seqlens_q,
         head_dim,
+        max_seqlen_q // 32,
         VARLEN=varlen_mode,
-        BLOCK_M=128,
         BLOCK_HEADDIM=BLOCK_HEADDIM,
     )
-
-    BLOCK_M1 = 128 # TODO: add autotuning
-    BLOCK_N1 = 64
-    BLOCK_M2 = 64
-    BLOCK_N2 = 128
-    # num_warps = 4
 
     # Launch backward kernel
     grid = lambda META: (
@@ -144,16 +134,9 @@ def _flash_attn_backward(
         max_seqlen_q // 32,
         max_seqlen_k // 32,  # key for triton cache (limit number of compilations)
         # Can't use kwargs here because triton autotune expects key to be args, not kwargs
-        # IS_CAUSAL=causal, BLOCK_HEADDIM=d,
         VARLEN=varlen_mode,
         IS_CAUSAL=causal,
         BLOCK_HEADDIM=BLOCK_HEADDIM,
-        # BLOCK_M1=BLOCK_M1,
-        # BLOCK_N1=BLOCK_N1,
-        # BLOCK_M2=BLOCK_M2,
-        # BLOCK_N2=BLOCK_N2,
-        # num_stages=1,
-        # SEQUENCE_PARALLEL=False,  BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,  num_warps=num_warps, num_stages=1,
     )
 
     # In case of variable length mode, we need to unpack the gradients
@@ -161,5 +144,10 @@ def _flash_attn_backward(
         dq = attention_unpack(dq, cum_seqlens_q, batch_size, max_seqlen_q)
         dk = attention_unpack(dk, cum_seqlens_k, batch_size, max_seqlen_k)
         dv = attention_unpack(dv, cum_seqlens_k, batch_size, max_seqlen_k)
+    # And add back the useless padding if there was any
+    if useless_padding > 0:
+        dq = F.pad(dq, (0, 0, 0, 0, 0, useless_padding))
+        dk = F.pad(dk, (0, 0, 0, 0, 0, useless_padding))
+        dv = F.pad(dv, (0, 0, 0, 0, 0, useless_padding))
 
     return dq, dk, dv

@@ -39,12 +39,11 @@ def _compute_single_block_dkdv(
     offs_m_curr = I_start_m + offs_m
 
     # Load Q and LSE now to reduce pipeline stall # TODO: check if pipeline stalling cant be avoided w/out
-    #BUG: if one is true and the ther not, q is filled with wrong values
+    # BUG: if one is true and the ther not, q is filled with wrong values
     q = load_fn(q_ptrs, 
                 offs_m_curr, offs_d, 
                 PAD_ROWS or HEADS_PADDED, PAD_ROWS or HEADS_PADDED, 
                 actual_seqlen_q, headdim)
-    # CATCHUP check if this is well located
     lse_i = tl.load(LSE + offs_m_curr) # since lsm is padded to max_seqlen_q, should be good
 
     # Recompute P_ij = softmax(qk, dim=-1).T
@@ -55,11 +54,13 @@ def _compute_single_block_dkdv(
     if MASKED:
         if PAD_COLS:
             if IS_CAUSAL:
-                qk = tl.where(tl.minimum(actual_seqlen_q - 1, offs_m_curr)[:, None] >= offs_n_causal[None, :], qk, float("-inf"))
+                qk = tl.where(
+                    tl.minimum(actual_seqlen_q - 1, offs_m_curr)[:, None] >= offs_n_causal[None, :], qk, float("-inf")
+                )
             else:
                 qk = tl.where(actual_seqlen_q - 1 >= offs_n_causal[None, :], qk, float("-inf"))
         elif IS_CAUSAL:
-            qk = tl.where(offs_m_curr[:, None] >= offs_n_causal[None, :], qk, float("-inf")) # TODO: fuse those? might not work (old com)
+            qk = tl.where(offs_m_curr[:, None] >= offs_n_causal[None, :], qk, float("-inf"))
     tl.debug_barrier()
 
     # Load the LogSumExp and retrieve P
@@ -79,8 +80,7 @@ def _compute_single_block_dkdv(
     # Compute auxiliary gradients
     dp = tl.dot(do, tl.trans(v))
 
-    # compute ds = p * (dp - delta[:, None])
-    # Putting the subtraction after the dp matmul (instead of before) is slightly faster
+    # Compute the gradient of the scores. Placing the substraction before the matmul apparently speeds up the process
     Di = tl.load(D + offs_m_curr)
     # Converting ds to q.dtype here reduces register pressure and makes it much faster for BLOCK_HEADDIM=128
     ds = (p * (dp - Di[:, None]) * softmax_scale).to(q.dtype)

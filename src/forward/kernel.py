@@ -16,10 +16,6 @@ from src.forward.compute_row_blocks import compute_row_block
         triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=4, num_stages=1),
         triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=8, num_stages=1),
     ],
-    # configs=[
-    #     triton.Config({"BLOCK_M": block, "BLOCK_N": block}, num_warps=num_warps, num_stages=num_stages)
-    #     for block, num_warps, num_stages in product([32, 64, 128, 256], [4, 8], [0, 1])
-    # ],
     key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"],
 )
 
@@ -27,7 +23,6 @@ from src.forward.compute_row_blocks import compute_row_block
     {
         "EVEN_M": lambda args: args["seqlen_q"] % args["BLOCK_M"] == 0,
         "EVEN_N": lambda args: args["seqlen_k"] % args["BLOCK_N"] == 0,
-        # "HEADS_NOT_PADDED": lambda args: args["headdim"] == args["BLOCK_HEADDIM"],
     }
 )
 @triton.jit
@@ -231,8 +226,7 @@ def _fwd_kernel(
         + (offs_m[:, None] * stride_om + offs_d[None, :])
     )
 
-    # Store O (same mechanism as Q)
-    # if uneven_m and PADDED_HEADS: TODO
+    # Store O (same mechanism as Q) BUG: here, the store instruction seems to fail when one of the two bools is false
     if True:
         tl.store(out_ptrs, acc_o, mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim))
     elif pad_rows:

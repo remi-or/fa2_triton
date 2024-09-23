@@ -43,10 +43,6 @@ def _compute_single_block_dq(
 
     offs_n_causal = (offs_n_curr - actual_seqlen_k + actual_seqlen_q)
 
-    # # Attention mask
-    # if PAD_COLS: 
-    #     qk = tl.where(actual_seqlen_k > offs_n_curr[None, :], qk, float("-inf"))
-
     # Attention and causal mask
     if MASKED:
         if PAD_COLS:
@@ -60,10 +56,6 @@ def _compute_single_block_dq(
 
     # Load the LogSumExp and retrieve P
     p = tl.exp2(qk * (softmax_scale * 1.44269504089) - lse_i[:, None])
-
-    # # Account for fully masked lines
-    # if fully_masked_lines > 0:
-    #     p = tl.where(offs_m[:, None] < fully_masked_lines, 0, p)
 
     # Compute auxiliary gradients
     dp = tl.dot(do, tl.trans(v))
@@ -149,7 +141,7 @@ def _compute_row_blocks_dq(
     lse_i = tl.load(LSE + offs_m) # since lse is padded to max_seqlen_q, should be good
     delta_i = tl.load(D + offs_m) # same as LSE for now
 
-    # 
+    # Infer the number of full and partially masked blocks
     uneven_n = (actual_seqlen_k % BLOCK_N != 0)
     attention_padding = VARLEN & uneven_n
     if IS_CAUSAL:

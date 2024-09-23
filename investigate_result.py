@@ -16,13 +16,13 @@ from tests.test_repeatability import _test_repeatability
 
 PLOT_HEAD_INDEX = None
 
-batch_size = 4
-num_heads = 9
+batch_size = 1
+num_heads = 3
 
-seqlen_q = 127
-seqlen_k = 513
+seqlen_q = 256
+seqlen_k = 108
 swap_seqlens = False
-use_attention = True
+use_attention = False
 
 head_dim = 32
 causal = True
@@ -90,9 +90,9 @@ if __name__ == "__main__":
     assert (v == v_copy).all()
 
     # Display part of the results
-    print("Ours:", start_and_end(dk, 3))
-    print("Ref:", start_and_end(dk_ref, 3))
-    print("Pt:", start_and_end(dk_pt, 3))
+    print("Ours:", start_and_end(dv, 3))
+    print("Ref:", start_and_end(dv_ref, 3))
+    print("Pt:", start_and_end(dv_pt, 3))
 
     # Save a glimpse of the results
     fig, axs = plt.subplots(3, 3)
