@@ -1,70 +1,87 @@
 import sys
+import os
 import os.path as osp
 import torch
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
+from typing import List
+from torch import Tensor
 
 sys.path.append(osp.dirname(osp.dirname(__file__)))
 from benchmarks.utils import measure_kernel_latency
 
 
 COMPARE_TO = "Pytorch"
-REPEATS = 10
+REPEATS = 20
 
-BATCH_SIZES = [2**i for i in range(3)]
+BATCH_SIZES = [2**i for i in range(6)]
 HIDDEN_DIM = 4096
 NUM_HEADS = 32
 DTYPE = torch.float16
 
-POINTS_PER_BATCH = 10
+def retrieve_speedup_curve_data(
+    kernels: List[str],
+    batch_size: int,
+    seqlens: Tensor,
+    causal: bool,
+    use_attention: bool,
+) -> Tensor:
+    # Setup
+    measured_times = torch.zeros(size=(seqlens.size(0), len(kernels), 2))
+    # Loop on seqlen
+    for i, seqlen in tqdm(enumerate(seqlens), total=14):
+        # Loop on kernels
+        for j, kernel in enumerate(kernels):
+            # Time kernel
+            time_forward_and_backward = measure_kernel_latency(
+                kernel=kernel, 
+                repeats=REPEATS, 
+                batch_size=batch_size, 
+                num_heads=NUM_HEADS, 
+                seqlen=seqlen.item(), 
+                head_dim=HIDDEN_DIM // NUM_HEADS, 
+                causal=causal,
+                use_attention=use_attention,
+                dtype=DTYPE,
+            )
+            # Accumulate or stop because of OOM
+            if time_forward_and_backward is None:
+                return seqlens[:i], measured_times[:i]
+            else:
+                measured_times[i, j] = torch.tensor(time_forward_and_backward)
+    return seqlens, measured_times
 
 
 if __name__ == "__main__":
-    fig, axs = plt.subplots(3, 1, sharex=True, figsize=(6, 12))
+    os.environ["TRITON_PRINT_AUTOTUNING"]="1"
+    
+    fig, axs = plt.subplots(3, 1, sharex=True, figsize=(6, 12))   
+    axs[0].set_title("Forward pass")
+    axs[1].set_title("Backward pass")
+    axs[2].set_title("Combined")
+    for i in range(3):
+        axs[i].set_ylabel("Speedup")
+        axs[i].axhline(1, color="red", linestyle="--")
+    axs[2].set_xlabel("Sequence length")
 
     for batch_size in BATCH_SIZES:
-        seqlens = torch.linspace(1, 2**14, steps=POINTS_PER_BATCH)
-        measured_times = torch.zeros(size=(seqlens.size(0), 2, 2))
-        oom_reached = False
-
-        for i, seqlen in tqdm(enumerate(seqlens), total=POINTS_PER_BATCH):
-            if oom_reached:
-                break
-
-            for j, kernel in enumerate([COMPARE_TO, "Liger"]):
-                # Time kernel
-                time_forward_and_backward = measure_kernel_latency(
-                    kernel=kernel, 
-                    repeats=REPEATS, 
-                    batch_size=batch_size, 
-                    num_heads=NUM_HEADS, 
-                    seqlen=seqlen.item(), 
-                    head_dim=HIDDEN_DIM // NUM_HEADS, 
-                    causal=True,
-                    dtype=DTYPE,
-                )
-                if time_forward_and_backward is None: # oom
-                    seqlens = seqlens[:i]
-                    measured_times = measured_times[:i]
-                    oom_reached = True
-                    break
-                else:
-                    measured_times[i, j] = torch.tensor(time_forward_and_backward)
+        seqlens, measured_times = retrieve_speedup_curve_data(
+            kernels=["Pytorch", "Liger"],
+            batch_size=batch_size, 
+            seqlens=torch.arange(1, 15).exp2().int(),
+            causal=False,
+            use_attention=False,
+        )
         
-        axs[0].set_title("Forward pass")
         axs[0].plot(seqlens, measured_times[:, 0, 0] / measured_times[:, 1, 0], label=f"B = {batch_size}")
-        axs[1].set_title("Backward pass")
         axs[1].plot(seqlens, measured_times[:, 0, 1] / measured_times[:, 1, 1], label=f"B = {batch_size}")
-        axs[2].set_title("Combined")
         axs[2].plot(seqlens, measured_times.sum(-1)[:, 0] / measured_times.sum(-1)[:, 1], label=f"B = {batch_size}")
-        for i in range(3):
-            axs[i].set_ylabel("Speedup")
-            axs[i].axhline(1, color="red", linestyle="--")
-            axs[i].legend()
-        axs[2].set_xlabel("Sequence length")
-
-    plt.plot()
+        fig.tight_layout()
+        fig.savefig(f"__tmp_speedup.png")
+    
+    for i in range(3):
+        axs[i].legend()
     fig.tight_layout()
-    fig.savefig(f"__tmp__.png")
+    fig.savefig(f"__tmp_speedup.png")
     plt.close()
     

@@ -17,7 +17,7 @@ except ModuleNotFoundError:
     FLEX_AVAILABLE = False
 
 
-from tests.utils import generate_test_data
+from tests.utils import generate_test_data, generate_attention_mask
 from src.other_implemenations.reference_implementation import attention_ref
 from benchmarks.bench_fns import benchmark_fwd_bwd
 from src.wrapper import flash_attn_func
@@ -46,6 +46,7 @@ def measure_kernel_latency(
     seqlen: int, 
     head_dim: int, 
     causal: bool, 
+    use_attention: bool, 
     dtype: torch.dtype,
 ) -> Optional[Tuple[float, float]]:
     q, k, v, _ = generate_test_data(
@@ -56,8 +57,9 @@ def measure_kernel_latency(
         head_dim=head_dim,
         dtype=dtype,
     )
+    attn_mask = generate_attention_mask(q) if use_attention else None
     if kernel == "Liger":
-        return time_fwd_bwd(flash_attn_func, q, k, v, None, None, causal, repeats=repeats, verbose=False)
+        return time_fwd_bwd(flash_attn_func, q, k, v, attn_mask, None, causal, repeats=repeats, verbose=False)
     elif kernel == "Flex":
         q = q.transpose(1, 2).contiguous()
         k = k.transpose(1, 2).contiguous()
@@ -68,7 +70,7 @@ def measure_kernel_latency(
             return None
     elif kernel == "Pytorch":
         try:
-            return time_fwd_bwd(attention_ref, q, k, v, causal=causal, repeats=repeats, verbose=False)
+            return time_fwd_bwd(attention_ref, q, k, v, attn_mask, attn_mask, causal=causal, repeats=repeats, verbose=False)
         except OutOfMemoryError:
             return None
     

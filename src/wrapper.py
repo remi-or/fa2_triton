@@ -34,7 +34,6 @@ class FlashAttnFunc(torch.autograd.Function):
             attention_mask,
             o,
             lse,
-            bias=bias,
             causal=ctx.causal,
             softmax_scale=ctx.softmax_scale,
         )

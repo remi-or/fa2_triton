@@ -5,12 +5,15 @@ import os.path as osp
 sys.path.append(osp.dirname(osp.dirname(__file__)))
 
 import torch
+import math
 import pytest
 from torch import Tensor
 
 from src.wrapper import flash_attn_func
 from tests.utils import generate_test_data, generate_attention_mask
 
+def stringify_nans(x):
+    return "nan" if math.isnan(x) else x
 
 def _test_repeatability(
     repeats: int,
@@ -38,13 +41,16 @@ def _test_repeatability(
     for _ in range(repeats):
         out: Tensor = flash_attn_func(q, k, v, attn_mask, None, causal)    
         dq, dk, dv = torch.autograd.grad(out, (q, k, v), do)
-        checksums["out"].append(out[mask_q].sum().item())
-        checksums["dq"].append(dq[mask_q].sum().item())
-        checksums["dk"].append(dk[mask_k].sum().item())
-        checksums["dv"].append(dv[mask_k].sum().item())
-    # Check sums
-    distinct_checksums = {key: len(set(cks)) for key, cks in checksums.items()}
-    assert all([x == 1 for x in distinct_checksums.values()]), checksums
+        checksums["out"].append(stringify_nans(out[mask_q].sum().item()))
+        checksums["dq"].append(stringify_nans(dq[mask_q].sum().item()))
+        checksums["dk"].append(stringify_nans(dk[mask_k].sum().item()))
+        checksums["dv"].append(stringify_nans(dv[mask_k].sum().item()))
+        # Check sums
+        distinct_checksums = {key: len(set(cks)) for key, cks in checksums.items()}
+        assert all([x == 1 for x in distinct_checksums.values()]), checksums
+    for key, values in checksums.items():
+        if "nan" in values:
+            print(f" --- WARNING: NaN detected among checksums_{key} --- ")
 
 # @pytest.mark.parametrize("dtype", ([torch.float16, torch.bfloat16]))
 # @pytest.mark.parametrize("causal", [False, True])

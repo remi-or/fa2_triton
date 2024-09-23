@@ -9,16 +9,20 @@ from src.forward.compute_row_blocks import compute_row_block
 
 @triton.autotune(
     configs=[
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=1),
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=8, num_stages=1),
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=4, num_stages=1),
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=8, num_stages=1),
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=4, num_stages=1),
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=8, num_stages=1),
     ],
-    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "BIAS_TYPE", "VARLEN", "IS_CAUSAL", "BLOCK_HEADDIM"],
+    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"],
 )
+
 @triton.heuristics(
     {
         "EVEN_M": lambda args: args["seqlen_q"] % args["BLOCK_M"] == 0,
         "EVEN_N": lambda args: args["seqlen_k"] % args["BLOCK_N"] == 0,
-        # "HEADS_NOT_PADDED": lambda args: args["headdim"] == args["BLOCK_HEADDIM"],
     }
 )
 @triton.jit
@@ -53,35 +57,35 @@ def _fwd_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
-    
-    softmax_scale = softmax_scale * 1.44269504089
     # Locate kernel inside the grid
     i_start_m = tl.program_id(0) # current block in the Q matrix
     off_head_and_batch = tl.program_id(1)
-    off_batch = off_head_and_batch // nheads
     off_head = off_head_and_batch % nheads
-    # Initialize offsets
-    offs_m = i_start_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    offs_n = tl.arange(0, BLOCK_N)
-    offs_d = tl.arange(0, BLOCK_HEADDIM)
+    off_batch = off_head_and_batch // nheads
 
     # Infer actual sequence length of Q and the offset to the last sequence
     if VARLEN:
-        actual_seqlen_q = tl.load(cum_seqlens_q + off_batch + 1) - tl.load(cum_seqlens_q + off_batch) 
-        actual_seqlen_k = actual_seqlen_q # TODO: support packed + varlen? rn, check is done outside
         cu_seq_start_q = tl.load(cum_seqlens_q + off_batch) 
-        cu_seq_start_k = tl.load(cum_seqlens_q + off_batch) 
+        actual_seqlen_q = tl.load(cum_seqlens_q + off_batch + 1) - cu_seq_start_q
+        if i_start_m * BLOCK_M >= actual_seqlen_q:
+            return
+        actual_seqlen_k = actual_seqlen_q # TODO: support packed + varlen? rn, check is done outside
+        cu_seq_start_k = cu_seq_start_q
         off_batch = 0
     else:
         actual_seqlen_q = seqlen_q
         actual_seqlen_k = seqlen_k
         cu_seq_start_q = 0
         cu_seq_start_k = 0
+    
+    softmax_scale = softmax_scale * 1.44269504089
+    # Initialize offsets
+    offs_m = i_start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, BLOCK_HEADDIM)
 
     # When in VARLEN mode, since we dimension the grid to be large enough for all sequences, the 
     # current sequence might have less rows than the current row (detemined through the grid).
-    if i_start_m * BLOCK_M >= actual_seqlen_q:
-        return
     
     fully_masked_lines = actual_seqlen_q - actual_seqlen_k if IS_CAUSAL else 0
     if fully_masked_lines >= (i_start_m+1) * BLOCK_M:
@@ -222,8 +226,7 @@ def _fwd_kernel(
         + (offs_m[:, None] * stride_om + offs_d[None, :])
     )
 
-    # Store O (same mechanism as Q)
-    # if uneven_m and PADDED_HEADS: TODO
+    # Store O (same mechanism as Q) BUG: here, the store instruction seems to fail when one of the two bools is false
     if True:
         tl.store(out_ptrs, acc_o, mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim))
     elif pad_rows:

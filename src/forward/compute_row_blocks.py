@@ -17,7 +17,7 @@ def compute_row_block(
     softmax_scale,
     stride_kn,
     stride_vn,
-    start_n,
+    I_start_n,
     actual_seqlen_q,
     actual_seqlen_k,
     headdim,
@@ -28,13 +28,13 @@ def compute_row_block(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
-    start_n = tl.multiple_of(start_n, BLOCK_N)
+    I_start_n = tl.multiple_of(I_start_n, BLOCK_N)
 
     # Load K (same mechanism as for Q, only check cols instead of rows)
-    offset_k_ptrs = k_ptrs + start_n * stride_kn
+    offset_k_ptrs = k_ptrs + I_start_n * stride_kn
     k = load_fn(
         offset_k_ptrs, 
-        start_n + offs_n, offs_d, 
+        I_start_n + offs_n, offs_d, 
         PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS, 
         LIM_AXIS_0=actual_seqlen_k, LIM_AXIS_1=headdim,
     )
@@ -45,10 +45,10 @@ def compute_row_block(
 
     # Apply attention masking and/or account for padding of the keys
     if PADDED_COLS:  # TODO: check impact on speed when conditionned by MASKED (always true)
-        qk += tl.where((start_n + offs_n)[None, :] < actual_seqlen_k, 0, float("-inf"))
+        qk += tl.where((I_start_n + offs_n)[None, :] < actual_seqlen_k, 0, float("-inf"))
     # Apply causal mask
     if MASKED and IS_CAUSAL:
-        causal_mask = offs_m[:, None] >= (start_n + offs_n - actual_seqlen_k + actual_seqlen_q)[None, :]
+        causal_mask = offs_m[:, None] >= (I_start_n + offs_n - actual_seqlen_k + actual_seqlen_q)[None, :]
         qk += tl.where(causal_mask, 0, float("-inf"))
 
     # else:
@@ -63,10 +63,10 @@ def compute_row_block(
     acc_o = acc_o * acc_o_scale[:, None]
 
     # Load V (same mechanism as K)
-    offset_v_ptrs = v_ptrs + start_n * stride_vn
+    offset_v_ptrs = v_ptrs + I_start_n * stride_vn
     v = load_fn(
         offset_v_ptrs, 
-        start_n + offs_n, offs_d, 
+        I_start_n + offs_n, offs_d, 
         PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS, 
         LIM_AXIS_0=actual_seqlen_k, LIM_AXIS_1=headdim,
     )

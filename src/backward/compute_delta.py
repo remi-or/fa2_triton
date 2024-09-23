@@ -1,6 +1,18 @@
 import triton
+from triton import Config
 import triton.language as tl
 
+MIN_B = 16
+
+@triton.autotune(
+    configs=[
+        Config({"BLOCK_M": MIN_B}, num_warps=4, num_stages=0),
+        Config({"BLOCK_M": 32}, num_warps=4, num_stages=0),
+        Config({"BLOCK_M": 64}, num_warps=4, num_stages=0),
+        Config({"BLOCK_M": 128}, num_warps=4, num_stages=0),
+    ],
+    key=["CACHE_KEY_SEQLEN_Q"], # TODO: add dtype
+)
 @triton.jit
 def _compute_delta(
     Out,
@@ -17,6 +29,7 @@ def _compute_delta(
     max_seqlen_q_rounded,
     cum_seqlens_q,
     headdim,
+    CACHE_KEY_SEQLEN_Q,
     VARLEN: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
