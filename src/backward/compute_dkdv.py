@@ -9,7 +9,7 @@ def _compute_single_block_dkdv(
     I_start_m,
     k,
     v,
-    dk, 
+    dk,
     dv,
     LSE,
     D,
@@ -40,15 +40,15 @@ def _compute_single_block_dkdv(
 
     # Load Q and LSE now to reduce pipeline stall
     # BUG: if one is true and the ther not, q is filled with wrong values
-    q = load_fn(q_ptrs, 
-                offs_m_curr, offs_d, 
-                PAD_ROWS or HEADS_PADDED, PAD_ROWS or HEADS_PADDED, 
+    q = load_fn(q_ptrs,
+                offs_m_curr, offs_d,
+                PAD_ROWS or HEADS_PADDED, PAD_ROWS or HEADS_PADDED,
                 actual_seqlen_q, headdim)
-    lse_i = tl.load(LSE + offs_m_curr) # since lsm is padded to max_seqlen_q, should be good
+    lse_i = tl.load(LSE + offs_m_curr)  # since lsm is padded to max_seqlen_q, should be good
 
     # Recompute P_ij = softmax(qk, dim=-1).T
     qk = tl.dot(q, tl.trans(k))
-    
+
     # Attention and causal mask
     offs_n_causal = (offs_n - actual_seqlen_k + actual_seqlen_q)
     if MASKED:
@@ -65,7 +65,7 @@ def _compute_single_block_dkdv(
 
     # Load the LogSumExp and retrieve P
     p = tl.exp2(qk * (softmax_scale * 1.44269504089) - lse_i[:, None])
-    
+
     # Account for fully masked lines
     if MASKED:
         if fully_masked_lines > 0:
@@ -73,7 +73,7 @@ def _compute_single_block_dkdv(
 
     # Load the gradient of O
     do = load_fn(do_ptrs, offs_m_curr, offs_d, PAD_ROWS, HEADS_PADDED, actual_seqlen_q, headdim)
-        
+
     # Compute the gradient of V
     dv += tl.dot(tl.trans(p).to(do.dtype), do)
 
@@ -120,26 +120,26 @@ def _compute_column_blocks_dkdv(
 ):
     # This fuction goes through a column, so it always ends at m = actual_seqlen_q but can start early due to causality
     I_begin_m = max(I_start_n + actual_seqlen_q - actual_seqlen_k, 0) if IS_CAUSAL else 0
-    I_begin_m = (I_begin_m // BLOCK_M) * BLOCK_M 
+    I_begin_m = (I_begin_m // BLOCK_M) * BLOCK_M
     I_end_m = actual_seqlen_q
 
     fully_masked_lines = (actual_seqlen_q - actual_seqlen_k) if IS_CAUSAL else 0
     # Since we are in a grid dimensionned to fit max_seqlen_q, some blocks may exist early
     if (I_begin_m >= actual_seqlen_q) or (I_start_n >= actual_seqlen_k):
         return
-    
-    # Initialize offsets 
+
+    # Initialize offsets
     offs_n = I_start_n + tl.arange(0, BLOCK_N)
     offs_m = tl.arange(0, BLOCK_M)
     offs_d = tl.arange(0, BLOCK_HEADDIM)
 
     # Initialize value-related pointer (not stats-related)
-    q_ptrs = Q + (offs_m[:, None] * stride_qm + offs_d[None, :]) 
+    q_ptrs = Q + (offs_m[:, None] * stride_qm + offs_d[None, :])
     k_ptrs = K + (offs_n[:, None] * stride_kn + offs_d[None, :])
     v_ptrs = V + (offs_n[:, None] * stride_vn + offs_d[None, :])
     dk_ptrs = DK + (offs_n[:, None] * stride_dkn + offs_d[None, :])
     dv_ptrs = DV + (offs_n[:, None] * stride_dvn + offs_d[None, :])
-    do_ptrs = DO + (offs_m[:, None] * stride_dom + offs_d[None, :]) 
+    do_ptrs = DO + (offs_m[:, None] * stride_dom + offs_d[None, :])
 
     # Initialize dv and dk
     dk = tl.zeros([BLOCK_N, BLOCK_HEADDIM], dtype=tl.float32)
@@ -150,7 +150,7 @@ def _compute_column_blocks_dkdv(
         k_ptrs, offs_n, offs_d,
         PAD_AXIS_0=PAD_COLS, PAD_AXIS_1=HEADS_PADDED,
         LIM_AXIS_0=actual_seqlen_k, LIM_AXIS_1=headdim,
-    )    
+    )
     v = load_fn(
         v_ptrs, offs_n, offs_d,
         PAD_AXIS_0=PAD_COLS, PAD_AXIS_1=HEADS_PADDED,
@@ -172,7 +172,7 @@ def _compute_column_blocks_dkdv(
                 I_next_start_m,
                 k,
                 v,
-                dk, 
+                dk,
                 dv,
                 LSE,
                 D,
@@ -190,12 +190,12 @@ def _compute_column_blocks_dkdv(
                 headdim,
                 MASKED=True,
                 IS_CAUSAL=IS_CAUSAL,
-                PAD_ROWS=True, # TODO: fix this
+                PAD_ROWS=True,  # TODO: fix this
                 PAD_COLS=PAD_COLS,
                 HEADS_PADDED=HEADS_PADDED,
             )
             I_next_start_m += BLOCK_M
-    
+
     # Full blocks
     if I_next_start_m < I_end_m:
         for I_start_m in range(I_next_start_m, I_end_m, BLOCK_M):
@@ -203,7 +203,7 @@ def _compute_column_blocks_dkdv(
                 I_start_m,
                 k,
                 v,
-                dk, 
+                dk,
                 dv,
                 LSE,
                 D,
@@ -221,7 +221,7 @@ def _compute_column_blocks_dkdv(
                 headdim,
                 MASKED=False,
                 IS_CAUSAL=IS_CAUSAL,
-                PAD_ROWS=True, # TODO: fix this
+                PAD_ROWS=True,  # TODO: fix this
                 PAD_COLS=PAD_COLS,
                 HEADS_PADDED=HEADS_PADDED,
             )

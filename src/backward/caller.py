@@ -12,17 +12,17 @@ from src.utils import attention_pack, attention_unpack
 
 
 def _flash_attn_backward(
-    dO: Tensor, # [batch_size, seqlen_q, num_heads, head_dim]
-    q: Tensor, # [batch_size, seqlen_q, num_heads, head_dim]
-    k: Tensor, # [batch_size, seqlen_k, num_heads, head_dim]
-    v: Tensor, # [batch_size, seqlen_k, num_heads, head_dim]
-    attention_mask: Optional[Tensor], # [batch_size, seqlen_qk]
-    o: Tensor, # [batch_size, seqlen_q, num_heads, head_dim]
-    lse: Tensor, # [batch_size, num_heads, max_seqlen_q_rounded]
-    causal: bool = False, 
+    dO: Tensor,  # [batch_size, seqlen_q, num_heads, head_dim]
+    q: Tensor,  # [batch_size, seqlen_q, num_heads, head_dim]
+    k: Tensor,  # [batch_size, seqlen_k, num_heads, head_dim]
+    v: Tensor,  # [batch_size, seqlen_k, num_heads, head_dim]
+    attention_mask: Optional[Tensor],  # [batch_size, seqlen_qk]
+    o: Tensor,  # [batch_size, seqlen_q, num_heads, head_dim]
+    lse: Tensor,  # [batch_size, num_heads, max_seqlen_q_rounded]
+    causal: bool = False,
     softmax_scale: Optional[float] = None,
 ) -> Tuple[Tensor, Tensor, Tensor]:
-    
+
     if attention_mask is not None:
         assert q.size(1) == k.size(1), "Attention mask is not supported with seqlen_q != seqlen_k"
         varlen_mode = (attention_mask.size(0) > 1)
@@ -52,18 +52,18 @@ def _flash_attn_backward(
     if varlen_mode:
         # Compute padding-related statistics
         cum_seqlens_q = torch.zeros(size=(attention_mask.size(0)+1,), device=attention_mask.device, dtype=torch.int32)
-        cum_seqlens_q[1:] = attention_mask.sum(dim=1).cumsum(0) 
+        cum_seqlens_q[1:] = attention_mask.sum(dim=1).cumsum(0)
         cum_seqlens_k = torch.zeros(size=(attention_mask.size(0)+1,), device=attention_mask.device, dtype=torch.int32)
-        cum_seqlens_k[1:] = attention_mask.sum(dim=1).cumsum(0) 
+        cum_seqlens_k[1:] = attention_mask.sum(dim=1).cumsum(0)
         # cum_seqlens_q = [0, seqlen_q1, seqlen_q1+seqlen_q2, ..., seqlen_q1+...+seqlen_qB] of shape [B+1]
         max_seqlen_q: int = attention_mask.size(1)
         max_seqlen_k: int = attention_mask.size(1)
         # Collate all matrices
-        q = attention_pack(q, attention_mask) # [1, sum_seqlens_qk, num_head, head_dim]
-        k = attention_pack(k, attention_mask) # [1, sum_seqlens_qk, num_head, head_dim]
-        v = attention_pack(v, attention_mask) # [1, sum_seqlens_qk, num_head, head_dim]
-        o = attention_pack(o, attention_mask) # [1, sum_seqlens_qk, num_head, head_dim]
-        dO = attention_pack(dO, attention_mask) # [1, sum_seqlens_qk, num_head, head_dim]
+        q = attention_pack(q, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
+        k = attention_pack(k, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
+        v = attention_pack(v, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
+        o = attention_pack(o, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
+        dO = attention_pack(dO, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
         # Update seqlens
         seqlen_q = q.size(1)
         seqlen_k = k.size(1)
@@ -74,15 +74,15 @@ def _flash_attn_backward(
         max_seqlen_k = seqlen_k
 
     # Prepare gradient accumulators # TODO: maybe we can initialize this as empty -- check pre hook
-    dq = torch.zeros_like(q, dtype=torch.float32) # [batch_size|1, seqlen_q|sum_seqlens_qk, num_heads, head_dim]
-    dk = torch.zeros_like(k) # [batch_size|1, seqlen_q|sum_seqlens_q, num_heads, head_dim]
-    dv = torch.zeros_like(v) # [batch_size|1, seqlen_q|sum_seqlens_k, num_heads, head_dim]
-    delta = torch.zeros_like(lse) # [batch_size, num_heads, max_seqlen_q_rounded]
+    dq = torch.zeros_like(q, dtype=torch.float32)  # [batch_size|1, seqlen_q|sum_seqlens_qk, num_heads, head_dim]
+    dk = torch.zeros_like(k)  # [batch_size|1, seqlen_q|sum_seqlens_q, num_heads, head_dim]
+    dv = torch.zeros_like(v)  # [batch_size|1, seqlen_q|sum_seqlens_k, num_heads, head_dim]
+    delta = torch.zeros_like(lse)  # [batch_size, num_heads, max_seqlen_q_rounded]
 
     # Infer problem size
     BLOCK_HEADDIM = max(triton.next_power_of_2(head_dim), 16)
     # Launch the delta computation kernel
-    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch_size * num_heads) # noqa: E731
+    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch_size * num_heads)  # noqa: E731
     _compute_delta[grid](
         o,
         dO,
@@ -104,8 +104,8 @@ def _flash_attn_backward(
     )
 
     # Launch backward kernel
-    grid = lambda META: ( # noqa: E731
-        triton.cdiv(seqlen_k, META["BLOCK_N1"]) + triton.cdiv(seqlen_q, META["BLOCK_M2"]), 
+    grid = lambda META: (  # noqa: E731
+        triton.cdiv(seqlen_k, META["BLOCK_N1"]) + triton.cdiv(seqlen_q, META["BLOCK_M2"]),
         batch_size * num_heads,
     )
     _bwd_kernel[grid](
@@ -119,13 +119,13 @@ def _flash_attn_backward(
         lse,
         delta,
         softmax_scale,
-        q.stride(0), q.stride(2), q.stride(1), 
-        k.stride(0), k.stride(2), k.stride(1), 
-        v.stride(0), v.stride(2), v.stride(1), 
-        dO.stride(0), dO.stride(2), dO.stride(1), 
-        dq.stride(0), dq.stride(2), dq.stride(1), 
-        dk.stride(0), dk.stride(2), dk.stride(1), 
-        dv.stride(0), dv.stride(2), dv.stride(1), 
+        q.stride(0), q.stride(2), q.stride(1),
+        k.stride(0), k.stride(2), k.stride(1),
+        v.stride(0), v.stride(2), v.stride(1),
+        dO.stride(0), dO.stride(2), dO.stride(1),
+        dq.stride(0), dq.stride(2), dq.stride(1),
+        dk.stride(0), dk.stride(2), dk.stride(1),
+        dv.stride(0), dv.stride(2), dv.stride(1),
         num_heads,
         seqlen_q,
         cum_seqlens_q,

@@ -34,9 +34,9 @@ def compute_row_block(
     # Load K (same mechanism as for Q, only check cols instead of rows)
     offset_k_ptrs = k_ptrs + I_start_n * stride_kn
     k = load_fn(
-        offset_k_ptrs, 
-        I_start_n + offs_n, offs_d, 
-        PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS, 
+        offset_k_ptrs,
+        I_start_n + offs_n, offs_d,
+        PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS,
         LIM_AXIS_0=actual_seqlen_k, LIM_AXIS_1=headdim,
     )
 
@@ -63,9 +63,9 @@ def compute_row_block(
     # Load V (same mechanism as K)
     offset_v_ptrs = v_ptrs + I_start_n * stride_vn
     v = load_fn(
-        offset_v_ptrs, 
-        I_start_n + offs_n, offs_d, 
-        PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS, 
+        offset_v_ptrs,
+        I_start_n + offs_n, offs_d,
+        PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS,
         LIM_AXIS_0=actual_seqlen_k, LIM_AXIS_1=headdim,
     )
 

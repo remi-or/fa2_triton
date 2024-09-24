@@ -1,21 +1,26 @@
 # Install the newest triton version with
 # pip install "git+https://github.com/openai/triton.git#egg=triton&subdirectory=python"
-import pickle
 import math
-import sys 
 import os
+import pickle
+import sys
+from itertools import product
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
-from itertools import product
-
-from tests.utils import generate_test_data
-from other_implemenations.reference_implementation import attention_ref
-from benchmarks.utils import benchmark_all, benchmark_forward, benchmark_backward, benchmark_fwd_bwd, benchmark_combined
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask
-
+from benchmarks.utils import (
+    benchmark_all,
+    benchmark_backward,
+    benchmark_combined,
+    benchmark_forward,
+    benchmark_fwd_bwd,
+)
+from src.reference_implementation import attention_ref
 from src.wrapper import flash_attn_func
+from tests.utils import generate_test_data
 
 try:
     from triton.ops.flash_attention import attention as attention_triton

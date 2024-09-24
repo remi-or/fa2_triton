@@ -1,8 +1,9 @@
 import triton
-from triton import Config
 import triton.language as tl
+from triton import Config
 
 MIN_B = 16
+
 
 @triton.autotune(
     configs=[
@@ -11,7 +12,7 @@ MIN_B = 16
         Config({"BLOCK_M": 64}, num_warps=4, num_stages=0),
         Config({"BLOCK_M": 128}, num_warps=4, num_stages=0),
     ],
-    key=["CACHE_KEY_SEQLEN_Q"], # TODO: add dtype
+    key=["CACHE_KEY_SEQLEN_Q"],  # TODO: add dtype
 )
 @triton.jit
 def _compute_delta(
@@ -35,7 +36,7 @@ def _compute_delta(
     BLOCK_HEADDIM: tl.constexpr,
 ):
     # Locate kernel inside the grid
-    start_m = tl.program_id(0) # current block in the Q matrix
+    start_m = tl.program_id(0)  # current block in the Q matrix
     off_head_and_batch = tl.program_id(1)
     off_batch = off_head_and_batch // nheads
     off_head = off_head_and_batch % nheads
@@ -45,8 +46,8 @@ def _compute_delta(
 
     # Infer actual sequence length of Q and the offset to the last sequence
     if VARLEN:
-        actual_seqlen_q = tl.load(cum_seqlens_q + off_batch + 1) - tl.load(cum_seqlens_q + off_batch) 
-        cu_seq_start_q = tl.load(cum_seqlens_q + off_batch) 
+        actual_seqlen_q = tl.load(cum_seqlens_q + off_batch + 1) - tl.load(cum_seqlens_q + off_batch)
+        cu_seq_start_q = tl.load(cum_seqlens_q + off_batch)
         off_batch = 0
     else:
         actual_seqlen_q = seqlen_q

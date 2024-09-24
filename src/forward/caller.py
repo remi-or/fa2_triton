@@ -10,14 +10,14 @@ from src.utils import attention_pack, attention_unpack
 
 
 def _flash_attn_forward(
-    q: Tensor, # [batch_size, seqlen_q, num_heads, head_dim]
-    k: Tensor, # [batch_size, seqlen_k, num_heads, head_dim]
-    v: Tensor, # [batch_size, seqlen_k, num_heads, head_dim]
-    attention_mask: Optional[Tensor], # [batch_size, seqlen_qk]
+    q: Tensor,  # [batch_size, seqlen_q, num_heads, head_dim]
+    k: Tensor,  # [batch_size, seqlen_k, num_heads, head_dim]
+    v: Tensor,  # [batch_size, seqlen_k, num_heads, head_dim]
+    attention_mask: Optional[Tensor],  # [batch_size, seqlen_qk]
     causal: bool = False,
     softmax_scale: Optional[float] = None,
 ) -> Tuple[Tensor, Tensor, float]:
-    
+
     # Currently, variable length (varlen) mode is mutually exclusive with attention masking (TODO)
     if attention_mask is not None:
         varlen_mode = True
@@ -41,14 +41,14 @@ def _flash_attn_forward(
     if varlen_mode:
         # Compute padding-related statistics
         cum_seqlens_q = torch.zeros(size=(attention_mask.size(0)+1,), device=attention_mask.device, dtype=torch.int32)
-        cum_seqlens_q[1:] = attention_mask.sum(dim=1).cumsum(0) 
+        cum_seqlens_q[1:] = attention_mask.sum(dim=1).cumsum(0)
         # cum_seqlens_q = [0, seqlen_q1, seqlen_q1+seqlen_q2, ..., seqlen_q1+...+seqlen_qB] of shape [B+1]
         max_seqlen_q: int = attention_mask.size(1)
         max_seqlen_k: int = attention_mask.size(1)
         # Collate all matrices
-        q = attention_pack(q, attention_mask) # [1, sum_seqlens_qk, num_head, head_dim]
-        k = attention_pack(k, attention_mask) # [1, sum_seqlens_qk, num_head, head_dim]
-        v = attention_pack(v, attention_mask) # [1, sum_seqlens_qk, num_head, head_dim]
+        q = attention_pack(q, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
+        k = attention_pack(k, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
+        v = attention_pack(v, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
         # Update seqlens
         seqlen_q = q.size(1)
     else:
@@ -60,7 +60,7 @@ def _flash_attn_forward(
     o = torch.zeros_like(q)
 
     # Setup LSE accumulators: in varlen mode, batch is still equal to the nb of queries
-    max_seqlen_q_rounded = math.ceil(max_seqlen_q / 128) * 128 # wastefull in varlen and not (just use mask)
+    max_seqlen_q_rounded = math.ceil(max_seqlen_q / 128) * 128  # wastefull in varlen and not (just use mask)
     lse = torch.zeros((batch, nheads, max_seqlen_q_rounded), device=q.device, dtype=torch.float32)
 
     # Infer problem size and launch kernel
@@ -68,7 +68,7 @@ def _flash_attn_forward(
     PADDED_HEADS = (BLOCK_HEADDIM > head_dim)
     # BLOCK = 128
     # num_warps = 4 if head_dim <= 64 else 8
-    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch * nheads) # noqa: E731
+    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch * nheads)  # noqa: E731
     _fwd_kernel[grid](
         q,
         k,
@@ -82,7 +82,7 @@ def _flash_attn_forward(
         o.stride(0), o.stride(2), o.stride(1),
         nheads,
         seqlen_q,
-        cum_seqlens_q, # array containing [seqlen_q_1, ..., seqlen_q_B] , if VARLEN, else None
+        cum_seqlens_q,  # array containing [seqlen_q_1, ..., seqlen_q_B] , if VARLEN, else None
         seqlen_k,
         max_seqlen_q_rounded,
         head_dim,
