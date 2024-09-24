@@ -6,7 +6,7 @@ import triton
 from torch import Tensor
 
 from src.forward.kernel import _fwd_kernel
-from src.utils import attention_pack, attention_unpack
+from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic
 
 
 def _flash_attn_forward(
@@ -41,7 +41,8 @@ def _flash_attn_forward(
     if varlen_mode:
         # Compute padding-related statistics
         cum_seqlens_q = torch.zeros(size=(attention_mask.size(0)+1,), device=attention_mask.device, dtype=torch.int32)
-        cum_seqlens_q[1:] = attention_mask.sum(dim=1).cumsum(0)
+        with torch_ignore_deterministic():
+            cum_seqlens_q[1:] = attention_mask.sum(dim=1).cumsum(0)
         # cum_seqlens_q = [0, seqlen_q1, seqlen_q1+seqlen_q2, ..., seqlen_q1+...+seqlen_qB] of shape [B+1]
         max_seqlen_q: int = attention_mask.size(1)
         max_seqlen_k: int = attention_mask.size(1)

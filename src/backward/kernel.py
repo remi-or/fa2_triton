@@ -21,7 +21,9 @@ def early_config_prune_bwd_kernel(
     for cfg in configs:
         block_m_too_large = max(cfg.kwargs["BLOCK_M1"], cfg.kwargs["BLOCK_M2"]) > named_args["seqlen_q"]
         block_n_too_large = max(cfg.kwargs["BLOCK_N1"], cfg.kwargs["BLOCK_N2"]) > named_args["seqlen_k"]
-        if not (block_m_too_large or block_n_too_large):
+        if (block_m_too_large or block_n_too_large):
+            pass
+        else:
             kept_configs.append(cfg)
     # If no config is left, go for the minimal config
     if configs:

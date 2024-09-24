@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import torch
 import triton
 import triton.language as tl
@@ -72,3 +74,15 @@ def store_fn(
     else:  # only heads are padded
         x = tl.store(ptrs, values, mask=offs_axis_1[None, :] < LIM_AXIS_1)
     return x
+
+import os
+
+
+class torch_ignore_deterministic:
+    def __enter__(self):
+        self.previous_mode = torch.are_deterministic_algorithms_enabled()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            raise exc_val
+        torch.use_deterministic_algorithms(self.previous_mode)
