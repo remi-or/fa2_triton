@@ -1,99 +1,93 @@
-# Install the newest triton version with
-# pip install "git+https://github.com/openai/triton.git#egg=triton&subdirectory=python"
-import pickle
-import math
-import sys 
 from typing import Optional, Tuple
-import os
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
-from torch.cuda import OutOfMemoryError
+import torch
+from torch import Tensor
+import triton
+
+from src.reference_implementation import attention_ref
+from src.wrapper import flash_attn_func
+from tests.utils import generate_attention_mask, generate_test_data
+
 try:
-    from src.other_implemenations.flex_attention import flex_attention
+    from src.other_implementations.flex_attention import (
+        _flex_attention_compiled,
+        causal_mask_fn,
+        create_block_mask,
+    )
     FLEX_AVAILABLE = True
-except ModuleNotFoundError:
+except ImportError:
     FLEX_AVAILABLE = False
 
 
-from tests.utils import generate_test_data, generate_attention_mask
-from src.other_implemenations.reference_implementation import attention_ref
-from benchmarks.bench_fns import benchmark_fwd_bwd
-from src.wrapper import flash_attn_func
+class FA2TestCaller:
 
+    available_kernels = ["Liger", "Pytorch"] + (["Flex"] if FLEX_AVAILABLE else [])
 
-# Conversion functions
-def flops(batch, seqlen, headdim, nheads, causal, mode="fwd"):
-    assert mode in ["fwd", "bwd", "fwd_bwd"]
-    f = 4 * batch * seqlen**2 * nheads * headdim // (2 if causal else 1)
-    return f if mode == "fwd" else (2.5 * f if mode == "bwd" else 3.5 * f)
-
-def efficiency(flop, time):
-    return (flop / time / 10**12) if not math.isnan(time) else 0.0
-
-
-# Timer function
-def time_fwd_bwd(func, *args, **kwargs):
-    time_f, time_b = benchmark_fwd_bwd(func, *args, **kwargs)
-    return time_f[1].mean, time_b[1].mean
-
-def measure_kernel_latency(
-    kernel: str,
-    repeats: int,
-    batch_size: int, 
-    num_heads: int, 
-    seqlen: int, 
-    head_dim: int, 
-    causal: bool, 
-    use_attention: bool, 
-    dtype: torch.dtype,
-) -> Optional[Tuple[float, float]]:
-    q, k, v, _ = generate_test_data(
-        batch_size=batch_size, 
-        num_heads=num_heads, 
-        seqlen_q=seqlen, 
-        seqlen_k=seqlen,
-        head_dim=head_dim,
-        dtype=dtype,
-    )
-    attn_mask = generate_attention_mask(q) if use_attention else None
-    if kernel == "Liger":
-        return time_fwd_bwd(flash_attn_func, q, k, v, attn_mask, None, causal, repeats=repeats, verbose=False)
-    elif kernel == "Flex":
-        q = q.transpose(1, 2).contiguous()
-        k = k.transpose(1, 2).contiguous()
-        v = v.transpose(1, 2).contiguous()
-        try:
-            return time_fwd_bwd(flex_attention, q, k, v, causal, repeats=repeats, verbose=False)
-        except OutOfMemoryError:
-            return None
-    elif kernel == "Pytorch":
-        try:
-            return time_fwd_bwd(attention_ref, q, k, v, attn_mask, attn_mask, causal=causal, repeats=repeats, verbose=False)
-        except OutOfMemoryError:
-            return None
-    
-def measure_kernel_tflops(
-    kernel: str,
-    mode: str,
-    repeats: int,
-    batch_size: int, 
-    num_heads: int, 
-    seqlen: int, 
-    head_dim: int, 
-    causal: bool, 
-    dtype: torch.dtype,
-) -> Optional[float]:
-    latency = measure_kernel_latency(
-        kernel=kernel, mode=mode, repeats=repeats,
-        batch_size=batch_size, num_heads=num_heads, seqlen=seqlen, head_dim=head_dim, 
-        causal=causal, dtype=dtype,
-    )
-    if latency is None:
-        return None
-    else:
-        return efficiency(
-            flops(batch_size, seqlen, head_dim, num_heads, causal, mode=mode),
-            latency,
+    def __init__(
+        self,
+        batch_size: int,
+        num_heads: int,
+        seqlen_q: int,
+        seqlen_k: int,
+        hidden_dim: int,
+        use_attention: bool,
+        causal: bool,
+        dtype: torch.dtype,
+        forward_only: bool = False,
+    ) -> None:
+        self.q, self.k, self.v, self.do = generate_test_data(
+            batch_size=batch_size,
+            num_heads=num_heads,
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
+            head_dim=hidden_dim // num_heads,
+            dtype=dtype,
         )
+        self.attn_mask = generate_attention_mask(self.q) if use_attention else None
+        if FLEX_AVAILABLE and causal:
+            self.block_mask = create_block_mask(causal_mask_fn, None, None, seqlen_q, seqlen_k)
+        else:
+            self.block_mask = None
+        self.causal = causal
+        self.forward_only = forward_only
+        self._kernel = ""
+
+    @property
+    def kernel(self) -> str:
+        if not self._kernel:
+            raise RuntimeError("Tried to access the proprety kernel without first setting it.")
+        return self._kernel
+
+    @kernel.setter
+    def kernel(self, value: str) -> None:
+        if value not in self.available_kernels:
+            raise ValueError(f"Cannot set the kernel to {value}. Available kernels are {self.available_kernels}")
+        if (self._kernel == "Flex") != (value == "Flex"):
+            self.q = self.q.transpose(1, 2).contiguous()
+            self.k = self.k.transpose(1, 2).contiguous()
+            self.v = self.v.transpose(1, 2).contiguous()
+            self.do = self.do.transpose(1, 2).contiguous()
+        self._kernel = value
+
+    def __call__(self) -> Tuple[Tensor, Optional[Tensor], Optional[Tensor], Optional[Tensor]]:
+        # Forward pass
+        if self.kernel == "Liger":
+            out = flash_attn_func(self.q, self.k, self.v, self.attn_mask, self.causal)
+        elif self.kernel == "Flex":
+            out = _flex_attention_compiled(self.q, self.k, self.v, block_mask=self.block_mask)
+        elif self.kernel == "Pytorch":
+            out = attention_ref(self.q, self.k, self.v, self.attn_mask, self.attn_mask, causal=self.causal)
+        else:
+            raise KeyError(f"Unknown self.kernel: {self.kernel}")
+        # Maybe backward pass
+        if not self.forward_only:
+            dq, dk, dv = torch.autograd.grad(out, (self.q, self.k, self.v), self.do)
+            self.q.grad = None
+            self.k.grad = None
+            self.v.grad = None
+        else:
+            dq, dk, dv = None, None, None
+        return out, dq, dk, dv
+
+    def bench(self, warmup: int = 100, rep: int = 1000) -> float:
+        return triton.testing.do_bench(fn=self, warmup=warmup, rep=rep)
