@@ -1,10 +1,10 @@
 import triton
 import triton.language as tl
 
-from src.utils import load_fn
 from src.forward.compute_row_blocks import compute_row_block
+from src.utils import load_fn
+
 # TODO: exit causal blocks early
-# TODO: check if using exp2 instead of exp leads to better results / times
 # TODO: can we initialize accO to empty instead of 0? 
 
 @triton.autotune(
@@ -88,7 +88,7 @@ def _fwd_kernel(
     if fully_masked_lines >= (i_start_m+1) * BLOCK_M:
         return
         
-    # Initialize pointers to Q, K, V # TODO: check if this uses int32 or int64 math (check FA repo)
+    # Initialize pointers to Q, K, V
     offseted_Q = Q + off_batch * stride_qb + off_head * stride_qh + cu_seq_start_q * stride_qm
     q_ptrs = (offseted_Q + (offs_m[:, None] * stride_qm + offs_d[None, :]))
     offseted_K = K + off_batch * stride_kb + off_head * stride_kh + cu_seq_start_k * stride_kn
@@ -106,7 +106,7 @@ def _fwd_kernel(
     q = load_fn(
         q_ptrs, 
         offs_m, offs_d, 
-        PAD_AXIS_0=pad_rows, PAD_AXIS_1=PADDED_HEADS, # TODO: fix
+        PAD_AXIS_0=pad_rows, PAD_AXIS_1=PADDED_HEADS,
         LIM_AXIS_0=actual_seqlen_q, LIM_AXIS_1=headdim,
     )
 

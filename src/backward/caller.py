@@ -1,13 +1,14 @@
-from typing import Tuple, Optional
 import math
+from typing import Optional, Tuple
+
 import torch
-from torch import Tensor
 import torch.nn.functional as F
 import triton
+from torch import Tensor
 
-from src.utils import attention_pack, attention_unpack
 from src.backward.compute_delta import _compute_delta
 from src.backward.kernel import _bwd_kernel
+from src.utils import attention_pack, attention_unpack
 
 
 def _flash_attn_backward(
@@ -72,7 +73,7 @@ def _flash_attn_backward(
         max_seqlen_q = seqlen_q
         max_seqlen_k = seqlen_k
 
-    # Prepare gradient accumulators # TODO: to simplify stuff, we initialize this to 0, but we could leave it empty -- check pre hook
+    # Prepare gradient accumulators # TODO: maybe we can initialize this as empty -- check pre hook
     dq = torch.zeros_like(q, dtype=torch.float32) # [batch_size|1, seqlen_q|sum_seqlens_qk, num_heads, head_dim]
     dk = torch.zeros_like(k) # [batch_size|1, seqlen_q|sum_seqlens_q, num_heads, head_dim]
     dv = torch.zeros_like(v) # [batch_size|1, seqlen_q|sum_seqlens_k, num_heads, head_dim]
@@ -81,7 +82,7 @@ def _flash_attn_backward(
     # Infer problem size
     BLOCK_HEADDIM = max(triton.next_power_of_2(head_dim), 16)
     # Launch the delta computation kernel
-    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch_size * num_heads)
+    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch_size * num_heads) # noqa: E731
     _compute_delta[grid](
         o,
         dO,
@@ -103,7 +104,7 @@ def _flash_attn_backward(
     )
 
     # Launch backward kernel
-    grid = lambda META: (
+    grid = lambda META: ( # noqa: E731
         triton.cdiv(seqlen_k, META["BLOCK_N1"]) + triton.cdiv(seqlen_q, META["BLOCK_M2"]), 
         batch_size * num_heads,
     )

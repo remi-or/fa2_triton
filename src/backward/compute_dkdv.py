@@ -38,7 +38,7 @@ def _compute_single_block_dkdv(
     # Update row variables
     offs_m_curr = I_start_m + offs_m
 
-    # Load Q and LSE now to reduce pipeline stall # TODO: check if pipeline stalling cant be avoided w/out
+    # Load Q and LSE now to reduce pipeline stall
     # BUG: if one is true and the ther not, q is filled with wrong values
     q = load_fn(q_ptrs, 
                 offs_m_curr, offs_d, 
