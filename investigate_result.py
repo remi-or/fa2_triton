@@ -3,7 +3,7 @@ import os
 import matplotlib.pyplot as plt
 import torch
 
-from src.other_implemenations.reference_implementation import attention_ref
+from src.reference_implementation import attention_ref
 from src.wrapper import flash_attn_func
 from tests.test_repeatability import _test_repeatability
 from tests.utils import (
@@ -109,17 +109,17 @@ if __name__ == "__main__":
         # axs[i, 2].imshow(dxs[2][-1].numpy(force=True))
     fig.savefig("__tmp__.png")
 
-    _test_repeatability(
-        repeats=10,
-        batch_size=batch_size,
-        num_heads=num_heads,
-        seqlen_q=seqlen_q,
-        seqlen_k=seqlen_k,
-        head_dim=head_dim,
-        attention=use_attention,
-        causal=causal,
-        dtype=dtype,
-    )
+    # _test_repeatability(
+    #     repeats=10,
+    #     batch_size=batch_size,
+    #     num_heads=num_heads,
+    #     seqlen_q=seqlen_q,
+    #     seqlen_k=seqlen_k,
+    #     head_dim=head_dim,
+    #     attention=use_attention,
+    #     causal=causal,
+    #     dtype=dtype,
+    # )
 
     # Compare results
     compare_results_fa(q, k, v, do, out, out_ref, out_pt)
