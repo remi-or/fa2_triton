@@ -1,6 +1,8 @@
-import torch
 import math
+
+import torch
 from einops import rearrange, repeat
+
 
 def construct_local_mask(
     seqlen_q,
@@ -35,6 +37,7 @@ def construct_local_mask(
             col_idx > torch.minimum(row_idx + sk - sq + window_size[1], sk),
             col_idx < row_idx + sk - sq - window_size[0],
         )
+
 
 def attention_ref(
     q,
@@ -123,4 +126,4 @@ def attention_ref(
     output = torch.einsum("bhts,bshd->bthd", attention_drop, v * dropout_scaling)
     if query_padding_mask is not None:
         output.masked_fill_(rearrange(~query_padding_mask, "b s -> b s 1 1"), 0.0)
-    return output.to(dtype=dtype_og)#, attention.to(dtype=dtype_og)
+    return output.to(dtype=dtype_og)

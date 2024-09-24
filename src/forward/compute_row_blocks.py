@@ -3,6 +3,7 @@ import triton.language as tl
 
 from src.utils import load_fn
 
+
 @triton.jit
 def compute_row_block(
     q,
@@ -33,9 +34,9 @@ def compute_row_block(
     # Load K (same mechanism as for Q, only check cols instead of rows)
     offset_k_ptrs = k_ptrs + I_start_n * stride_kn
     k = load_fn(
-        offset_k_ptrs, 
-        I_start_n + offs_n, offs_d, 
-        PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS, 
+        offset_k_ptrs,
+        I_start_n + offs_n, offs_d,
+        PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS,
         LIM_AXIS_0=actual_seqlen_k, LIM_AXIS_1=headdim,
     )
 
@@ -44,18 +45,15 @@ def compute_row_block(
     qk += tl.dot(q, tl.trans(k))
 
     # Apply attention masking and/or account for padding of the keys
-    if PADDED_COLS:  # TODO: check impact on speed when conditionned by MASKED (always true)
+    if PADDED_COLS:  # TODO: check impact on speed when conditionned by MASKED (always true?)
         qk += tl.where((I_start_n + offs_n)[None, :] < actual_seqlen_k, 0, float("-inf"))
     # Apply causal mask
     if MASKED and IS_CAUSAL:
         causal_mask = offs_m[:, None] >= (I_start_n + offs_n - actual_seqlen_k + actual_seqlen_q)[None, :]
         qk += tl.where(causal_mask, 0, float("-inf"))
 
-    # else:
     m_ij = tl.maximum(tl.max(qk, 1) * softmax_scale, lse_i)
     P_ij = tl.exp2(qk * softmax_scale - m_ij[:, None])
-
-    # Accumulate stats
     l_ij = tl.sum(P_ij, 1)
 
     # Scale the output accumulator
@@ -65,9 +63,9 @@ def compute_row_block(
     # Load V (same mechanism as K)
     offset_v_ptrs = v_ptrs + I_start_n * stride_vn
     v = load_fn(
-        offset_v_ptrs, 
-        I_start_n + offs_n, offs_d, 
-        PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS, 
+        offset_v_ptrs,
+        I_start_n + offs_n, offs_d,
+        PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS,
         LIM_AXIS_0=actual_seqlen_k, LIM_AXIS_1=headdim,
     )
 

@@ -1,14 +1,15 @@
-import triton
-from triton import Config
-import triton.language as tl
-from typing import List, Dict, Any
-
 import math
+from typing import Any, Dict, List
+
+import triton
+import triton.language as tl
+from triton import Config
+
 from src.backward.compute_dkdv import _compute_column_blocks_dkdv
 from src.backward.compute_dq import _compute_row_blocks_dq
 
-
 MIN_B = 16
+
 
 def early_config_prune_bwd_kernel(
     configs: List[Config],
@@ -20,13 +21,14 @@ def early_config_prune_bwd_kernel(
     for cfg in configs:
         block_m_too_large = max(cfg.kwargs["BLOCK_M1"], cfg.kwargs["BLOCK_M2"]) > named_args["seqlen_q"]
         block_n_too_large = max(cfg.kwargs["BLOCK_N1"], cfg.kwargs["BLOCK_N2"]) > named_args["seqlen_k"]
-        if not (block_m_too_large or block_n_too_large):
+        if (block_m_too_large or block_n_too_large):
+            pass
+        else:
             kept_configs.append(cfg)
     # If no config is left, go for the minimal config
     if configs:
         return configs
     return [Config({"BLOCK_M1": MIN_B, "BLOCK_N1": MIN_B, "BLOCK_M2": MIN_B, "BLOCK_N2": MIN_B}, num_warps=4, num_stages=0)]
-
 
 
 @triton.autotune(
@@ -37,7 +39,7 @@ def early_config_prune_bwd_kernel(
         Config({"BLOCK_M1": 64, "BLOCK_N1": 64, "BLOCK_M2": 64, "BLOCK_N2": 64}, num_warps=4, num_stages=0),
         Config({"BLOCK_M1": 64, "BLOCK_N1": 128, "BLOCK_M2": 128, "BLOCK_N2": 64}, num_warps=4, num_stages=0),
     ],
-    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"], # TODO: add dtype
+    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"],  # TODO: add dtype
     prune_configs_by={"early_config_prune": early_config_prune_bwd_kernel},
 )
 @triton.heuristics(
@@ -47,7 +49,7 @@ def early_config_prune_bwd_kernel(
         "EVEN_M2": lambda args: args["seqlen_q"] % args["BLOCK_M2"] == 0,
         "EVEN_N2": lambda args: args["seqlen_k"] % args["BLOCK_N2"] == 0,
         "HEADS_PADDED": lambda args: args["headdim"] != args["BLOCK_HEADDIM"],
-        "NUM_BLOCKS_KV": lambda args: math.ceil(args["seqlen_k"] /  args["BLOCK_N1"]),
+        "NUM_BLOCKS_KV": lambda args: math.ceil(args["seqlen_k"] / args["BLOCK_N1"]),
     }
 )
 @triton.jit
@@ -62,13 +64,13 @@ def _bwd_kernel(
     LSE,
     D,
     softmax_scale,
-    stride_qb, stride_qh, stride_qm, 
-    stride_kb, stride_kh, stride_kn, 
-    stride_vb, stride_vh, stride_vn, 
-    stride_dob, stride_doh, stride_dom, 
-    stride_dqb, stride_dqh, stride_dqm, 
-    stride_dkb, stride_dkh, stride_dkn, 
-    stride_dvb, stride_dvh, stride_dvn, 
+    stride_qb, stride_qh, stride_qm,
+    stride_kb, stride_kh, stride_kn,
+    stride_vb, stride_vh, stride_vn,
+    stride_dob, stride_doh, stride_dom,
+    stride_dqb, stride_dqh, stride_dqm,
+    stride_dkb, stride_dkh, stride_dkn,
+    stride_dvb, stride_dvh, stride_dvn,
     nheads,
     seqlen_q,
     cum_seqlens_q,
@@ -100,8 +102,8 @@ def _bwd_kernel(
 
     # If in variable length mode, retrieve the actual sequence lengths
     if VARLEN:
-        cu_seq_start_q = tl.load(cum_seqlens_q + off_batch) 
-        cu_seq_start_k = tl.load(cum_seqlens_k + off_batch) 
+        cu_seq_start_q = tl.load(cum_seqlens_q + off_batch)
+        cu_seq_start_k = tl.load(cum_seqlens_k + off_batch)
         actual_seqlen_q = tl.load(cum_seqlens_q + off_batch + 1) - cu_seq_start_q
         actual_seqlen_k = tl.load(cum_seqlens_k + off_batch + 1) - cu_seq_start_k
         off_batch = 0
@@ -127,7 +129,7 @@ def _bwd_kernel(
     # Case: this block works on dk and dv
     if pid < NUM_BLOCKS_KV:
         i_start_n = pid
-        pad_cols = (not EVEN_N1) or (VARLEN and ((i_start_n + 1) * BLOCK_N1 > actual_seqlen_k)) # this works while other bools fail. Why?
+        pad_cols = (not EVEN_N1) or (VARLEN and ((i_start_n + 1) * BLOCK_N1 > actual_seqlen_k))
         _compute_column_blocks_dkdv(
             i_start_n * BLOCK_N1,
             Q, K, V, DO, DK, DV, LSE, D,
@@ -139,16 +141,16 @@ def _bwd_kernel(
             BLOCK_M=BLOCK_M1, BLOCK_N=BLOCK_N1, BLOCK_HEADDIM=BLOCK_HEADDIM,
         )
 
-    # Case: this block works on dq      
+    # Case: this block works on dq
     else:
         i_start_m = pid - NUM_BLOCKS_KV
-        pad_rows = (not EVEN_M2) or (VARLEN and ((i_start_m + 1) * BLOCK_M2 > actual_seqlen_q)) # this works while other bools fail. Why?
+        pad_rows = (not EVEN_M2) or (VARLEN and ((i_start_m + 1) * BLOCK_M2 > actual_seqlen_q))
         _compute_row_blocks_dq(
             i_start_m * BLOCK_M2,
             Q, K, V, DO, DQ, LSE, D,
             softmax_scale,
-            stride_qm, stride_kn, stride_vn, stride_dom, stride_dqm, 
-            actual_seqlen_q, actual_seqlen_k, headdim, 
+            stride_qm, stride_kn, stride_vn, stride_dom, stride_dqm,
+            actual_seqlen_q, actual_seqlen_k, headdim,
             VARLEN=VARLEN, IS_CAUSAL=IS_CAUSAL,
             PAD_ROWS=pad_rows, HEADS_PADDED=HEADS_PADDED,
             BLOCK_M=BLOCK_M2, BLOCK_N=BLOCK_N2, BLOCK_HEADDIM=BLOCK_HEADDIM,

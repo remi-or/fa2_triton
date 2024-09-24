@@ -34,7 +34,7 @@ def _compute_single_block_dq(
     v_ptrs = v_ptrs + I_start_n * stride_vn
     offs_n_curr = I_start_n + offs_n
 
-    # Load K, V and LSE now to reduce pipeline stall # TODO: check if pipeline stalling cant be avoided w/out
+    # Load K, V and LSE now to reduce pipeline stall
     k = load_fn(k_ptrs, offs_n_curr, offs_d, PAD_COLS, HEADS_PADDED, actual_seqlen_k, headdim)
     v = load_fn(v_ptrs, offs_n_curr, offs_d, PAD_COLS, HEADS_PADDED, actual_seqlen_k, headdim)
 
@@ -51,7 +51,7 @@ def _compute_single_block_dq(
             else:
                 qk = tl.where(actual_seqlen_q - 1 >= offs_n_causal[None, :], qk, float("-inf"))
         elif IS_CAUSAL:
-            qk = tl.where(offs_m[:, None] >= offs_n_causal[None, :], qk, float("-inf")) # TODO: fuse those? might not work (old com)
+            qk = tl.where(offs_m[:, None] >= offs_n_causal[None, :], qk, float("-inf"))
     tl.debug_barrier()
 
     # Load the LogSumExp and retrieve P
@@ -70,6 +70,7 @@ def _compute_single_block_dq(
 
     return dq
 
+
 @triton.jit
 def _compute_row_blocks_dq(
     I_start_m,
@@ -87,7 +88,7 @@ def _compute_row_blocks_dq(
     stride_dom,
     stride_dqm,
     actual_seqlen_q,
-    actual_seqlen_k, 
+    actual_seqlen_k,
     headdim,
     VARLEN: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
@@ -111,8 +112,8 @@ def _compute_row_blocks_dq(
     # Exit if the block is fully masked or the current row is greater than the actual sequence length
     if (I_start_m >= actual_seqlen_q) or (fully_masked_lines >= I_start_m + BLOCK_M):
         return
-    
-    # Initialize offsets 
+
+    # Initialize offsets
     offs_m = tl.arange(0, BLOCK_M) + I_start_m
     offs_n = tl.arange(0, BLOCK_N)
     offs_d = tl.arange(0, BLOCK_HEADDIM)
@@ -132,14 +133,14 @@ def _compute_row_blocks_dq(
         q_ptrs, offs_m, offs_d,
         PAD_AXIS_0=PAD_ROWS, PAD_AXIS_1=HEADS_PADDED,
         LIM_AXIS_0=actual_seqlen_q, LIM_AXIS_1=headdim,
-    ) 
+    )
     do = load_fn(
         do_ptrs, offs_m, offs_d,
         PAD_AXIS_0=PAD_ROWS, PAD_AXIS_1=HEADS_PADDED,
         LIM_AXIS_0=actual_seqlen_q, LIM_AXIS_1=headdim,
-    ) 
-    lse_i = tl.load(LSE + offs_m) # since lse is padded to max_seqlen_q, should be good
-    delta_i = tl.load(D + offs_m) # same as LSE for now
+    )
+    lse_i = tl.load(LSE + offs_m)  # since lse is padded to max_seqlen_q, should be good
+    delta_i = tl.load(D + offs_m)  # same as LSE for now
 
     # Infer the number of full and partially masked blocks
     uneven_n = (actual_seqlen_k % BLOCK_N != 0)
@@ -151,9 +152,8 @@ def _compute_row_blocks_dq(
     else:
         first_masked_col = I_end_n
     nb_full_blocks = first_masked_col // BLOCK_N
-    
+
     # Loop over rows to compute dk and dv
-    # for I_start_n in range(0, I_end_n, BLOCK_N): # TODO: break loop to avoid useless padding of rows and causal
     I_next_start_n = 0
     if nb_full_blocks > 0:
         for _ in range(0, nb_full_blocks):
@@ -187,7 +187,6 @@ def _compute_row_blocks_dq(
     if I_next_start_n < I_end_n:
         for I_start_n in range(I_next_start_n, I_end_n, BLOCK_N):
             pad_cols = (not EVEN_N) or (VARLEN and (I_start_n + BLOCK_N > actual_seqlen_k))
-            # pad_cols = (not EVEN_N) or VARLEN # TODO: refine varlen side
             dq = _compute_single_block_dq(
                 I_start_n,
                 q,
@@ -213,8 +212,7 @@ def _compute_row_blocks_dq(
                 HEADS_PADDED=HEADS_PADDED,
             )
 
-    # TODO: check this does not break parity
-    # Account for fully masked lines 
+    # Account for fully masked lines
     if fully_masked_lines > 0:
         dq = tl.where(offs_m[:, None] < fully_masked_lines, 0, dq)
 

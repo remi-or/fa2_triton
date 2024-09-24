@@ -1,11 +1,12 @@
 import torch
 from torch import Tensor
-
-from torch.nn.attention.flex_attention import flex_attention as _flex_attention_uncompiled
 from torch.nn.attention.flex_attention import create_block_mask
+from torch.nn.attention.flex_attention import (
+    flex_attention as _flex_attention_uncompiled,
+)
 
 torch._dynamo.config.cache_size_limit = 1000
-_flex_attention_compiled = torch.compile(_flex_attention_uncompiled, dynamic=False)
+_flex_attention_compiled = torch.compile(_flex_attention_uncompiled, dynamic=False, mode="max-autotune-no-cudagraphs")
 
 def causal_mask_fn(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
