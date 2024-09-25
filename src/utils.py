@@ -77,6 +77,17 @@ def infer_bias_strides(
     return stride_bb, stride_bh, stride_bm
 
 
+def handle_dropout(dropout_p: float, dropout_seed: Optional[int]) -> int:
+    assert dropout_p >= 0, f"Dropout probability {dropout_p = } must be above 0."
+    assert dropout_p < 1, f"Dropout probability {dropout_p = } must be strictly below 1."
+    if dropout_p == 0:
+        return 0
+    elif dropout_seed is not None:
+        return dropout_seed
+    else:
+        return torch.randint(low=0, high=2**32, size=(1,)).item()
+
+
 class torch_ignore_deterministic:
     def __enter__(self):
         self.previous_mode = torch.are_deterministic_algorithms_enabled()

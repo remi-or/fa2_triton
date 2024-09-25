@@ -2,6 +2,8 @@ import torch
 from torch import Tensor
 from typing import Tuple, Optional
 import warnings
+import triton
+import triton.language as tl
 
 
 def generate_test_data(
@@ -161,3 +163,44 @@ def compare_tensors(
             print("-"*30, "TESTED FAILED", "-"*30)
         else:
             raise ValueError(details)
+
+
+def generate_dropout_seed_and_mask(
+    dropout_p: float,
+    q: Tensor,
+    k: Tensor,
+    attention_mask: Optional[Tensor],
+) -> Tuple[Optional[int], Optional[Tensor]]:
+    if dropout_p == 0:
+        return None, None
+    dropout_seed = torch.randint(low=0, high=2**32, size=(1,)).item()
+    if attention_mask is None:
+        batch, seqlen_q, nheads_q, head_dim = q.shape
+        seqlen_k = k.size(1)
+    else:
+        batch, _, nheads_q, head_dim = q.shape
+        seqlen_q = attention_mask.float().sum().item()
+        seqlen_k = seqlen_q
+    dropout_mask = torch.zeros(size=(batch, nheads_q, seqlen_q, seqlen_k)).to("cuda")
+    n_elements = dropout_mask.numel()
+    BLOCK_SIZE = 64
+    grid = lambda meta: (triton.cdiv(n_elements, BLOCK_SIZE), )
+    _generate_dropout_mask[grid](dropout_mask, dropout_seed, dropout_p, n_elements, BLOCK_SIZE)
+    return dropout_seed, dropout_mask.bool()
+
+
+@triton.jit
+def _generate_dropout_mask(
+    output_ptr,
+    dropout_seed,
+    dropout_p,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
+    I_start = tl.program_id(axis=0) * BLOCK_SIZE
+    offsets = I_start + tl.arange(0, BLOCK_SIZE)
+    # load data from x
+    mask = offsets < n_elements
+    # randomly prune it
+    dropout_mask = tl.rand(dropout_seed, offsets) > dropout_p
+    tl.store(output_ptr + offsets, dropout_mask, mask=mask)

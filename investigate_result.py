@@ -16,20 +16,19 @@ from tests.utils import (
 
 PLOT_HEAD_INDEX = None
 
-batch_size = 4
-num_heads = 9
+batch_size = 1
+num_heads = 1
 
 seqlen_q = 127
 seqlen_k = 513
 swap_seqlens = False
-use_attention = True
+use_attention = False
 
 head_dim = 32
-causal = True
+causal = False
 dtype = torch.float16
 
-forward_only = False
-
+forward_only = True
 
 
 if __name__ == "__main__":
@@ -42,7 +41,7 @@ if __name__ == "__main__":
         seqlen_q = seqlen_k
 
     # Prepare data
-    q, k, v, do = generate_test_data(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, dtype)
+    q, k, v, do = generate_test_data(batch_size, num_heads, num_heads, seqlen_q, seqlen_k, head_dim, dtype)
     q_copy, k_copy, v_copy = q.clone(), k.clone(), v.clone()
     attn_mask = generate_attention_mask(q, True) if use_attention else None
 
@@ -53,7 +52,17 @@ if __name__ == "__main__":
         q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, causal=causal, upcast=False, reorder_ops=True
     )
     # Compute ours
-    out = flash_attn_func(q, k, v, attn_mask, causal)
+    out = flash_attn_func(
+        q,
+        k,
+        v,
+        attn_mask,
+        None,  # bias
+        0.1,  # dropout_
+        causal,  # causal
+        None,  # softmax scale
+        0,  # dropout_seed
+    )
 
     if forward_only:
         # Display part of the results

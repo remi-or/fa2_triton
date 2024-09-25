@@ -17,12 +17,16 @@ def compute_row_block(
     offs_n,
     offs_d,
     softmax_scale,
+    dropout_p,
+    dropout_seed,
+    dropout_offs,
     stride_kn,
     stride_vn,
     I_start_n,
     actual_seqlen_q,
     actual_seqlen_k,
     headdim,
+    USE_DROPOUT: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BIAS_ON: tl.constexpr,
     MASKED: tl.constexpr,
@@ -67,6 +71,12 @@ def compute_row_block(
     m_ij = tl.maximum(tl.max(qk, 1) * softmax_scale, lse_i)
     P_ij = tl.exp2(qk * softmax_scale - m_ij[:, None])
     l_ij = tl.sum(P_ij, 1)
+
+    # Dropout
+    if USE_DROPOUT:
+        dropout_offs = dropout_offs + I_start_n
+        dropout_mask = (tl.rand(dropout_seed, dropout_offs) > dropout_p)  # TODO: replace this w/ randint for better perfs
+        P_ij = tl.where(dropout_mask, P_ij, 0.0)
 
     # Scale the output accumulator
     acc_o_scale = tl.exp2(m_i - m_ij)

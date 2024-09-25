@@ -17,8 +17,10 @@ class FlashAttnFunc(torch.autograd.Function):
         v: Tensor,
         attention_mask: Optional[Tensor] = None,
         attention_bias: Optional[Tensor] = None,
+        dropout_p: float = 0.0,
         causal: bool = False,
         softmax_scale: Optional[Tensor] = None,
+        dropout_seed: Optional[int] = None,
     ):
         """
         Compute the forward pass of the FlashAttention function.
@@ -40,8 +42,16 @@ class FlashAttnFunc(torch.autograd.Function):
         k = k if k.stride(-1) == 1 else k.contiguous()
         v = v if v.stride(-1) == 1 else v.contiguous()
         attention_bias = None if (attention_bias is None) else attention_bias.contiguous()
-        o, lse, ctx.softmax_scale = _flash_attn_forward(
-            q, k, v, attention_mask=attention_mask, bias=attention_bias, causal=causal, softmax_scale=softmax_scale
+        o, lse, ctx.softmax_scale, ctx.dropout_seed = _flash_attn_forward(
+            q=q,
+            k=k,
+            v=v,
+            attention_mask=attention_mask,
+            bias=attention_bias,
+            dropout_p=dropout_p,
+            causal=causal,
+            softmax_scale=softmax_scale,
+            dropout_seed=dropout_seed,
         )
         ctx.save_for_backward(q, k, v, attention_bias, attention_mask, o, lse)
         ctx.causal = causal
@@ -64,7 +74,18 @@ class FlashAttnFunc(torch.autograd.Function):
         return dq, dk, dv, None, None, None, None
 
 
-flash_attn_func = FlashAttnFunc.apply
+def flash_attn_func(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    attention_mask: Optional[Tensor] = None,
+    attention_bias: Optional[Tensor] = None,
+    dropout_p: float = 0.0,
+    causal: bool = False,
+    softmax_scale: Optional[Tensor] = None,
+    dropout_seed: Optional[int] = None,
+) -> Tensor:
+    return FlashAttnFunc.apply(q, k, v, attention_mask, attention_bias, dropout_p, causal, softmax_scale, dropout_seed)
 
 
 class LogsumexpFunc(torch.autograd.Function):
