@@ -17,15 +17,16 @@ def _compute_single_block_dq(
     offs_d,
     k_ptrs,
     v_ptrs,
+    bias_ptrs,
     softmax_scale,
     stride_kn,
     stride_vn,
     actual_seqlen_q,
     actual_seqlen_k,
-    fully_masked_lines,
     headdim,
     MASKED: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
+    BIAS_ON: tl.constexpr,
     PAD_COLS: tl.constexpr,
     HEADS_PADDED: tl.constexpr,
 ):
@@ -33,13 +34,19 @@ def _compute_single_block_dq(
     k_ptrs = k_ptrs + I_start_n * stride_kn
     v_ptrs = v_ptrs + I_start_n * stride_vn
     offs_n_curr = I_start_n + offs_n
+    if BIAS_ON:
+        bias_ptrs += I_start_n
 
     # Load K, V and LSE now to reduce pipeline stall
     k = load_fn(k_ptrs, offs_n_curr, offs_d, PAD_COLS, HEADS_PADDED, actual_seqlen_k, headdim)
     v = load_fn(v_ptrs, offs_n_curr, offs_d, PAD_COLS, HEADS_PADDED, actual_seqlen_k, headdim)
+    if BIAS_ON:
+        bias = load_fn(bias_ptrs, offs_m, offs_n_curr, True, PAD_COLS, actual_seqlen_q, actual_seqlen_k)  # TODO: pad rows
 
     # Recompute P_ij = softmax(qk, dim=-1).T
     qk = tl.dot(q, tl.trans(k))
+    if BIAS_ON:
+        qk += bias / softmax_scale  # TODO: check if this is optimal
 
     offs_n_causal = (offs_n_curr - actual_seqlen_k + actual_seqlen_q)
 
@@ -77,6 +84,7 @@ def _compute_row_blocks_dq(
     Q,
     K,
     V,
+    Bias,
     DO,
     DQ,
     LSE,
@@ -85,6 +93,7 @@ def _compute_row_blocks_dq(
     stride_qm,
     stride_kn,
     stride_vn,
+    stride_bm,
     stride_dom,
     stride_dqm,
     actual_seqlen_q,
@@ -92,6 +101,7 @@ def _compute_row_blocks_dq(
     headdim,
     VARLEN: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
+    BIAS_ON: tl.constexpr,
     PAD_ROWS: tl.constexpr,
     HEADS_PADDED: tl.constexpr,
     BLOCK_M: tl.constexpr,
@@ -124,6 +134,10 @@ def _compute_row_blocks_dq(
     v_ptrs = V + (offs_n[:, None] * stride_vn + offs_d[None, :])
     dq_ptrs = DQ + (offs_m[:, None] * stride_dqm + offs_d[None, :])
     do_ptrs = DO + (offs_m[:, None] * stride_dom + offs_d[None, :])
+    if BIAS_ON:
+        bias_ptrs = Bias + (offs_m[:, None] * stride_bm + offs_n[None, :])
+    else:
+        bias_ptrs = None
 
     # Initialize the dq accumulator
     dq = tl.zeros([BLOCK_M, BLOCK_HEADDIM], dtype=tl.float32)
@@ -170,14 +184,15 @@ def _compute_row_blocks_dq(
                 offs_d,
                 k_ptrs,
                 v_ptrs,
+                bias_ptrs,
                 softmax_scale,
                 stride_kn,
                 stride_vn,
                 actual_seqlen_q,
                 actual_seqlen_k,
-                fully_masked_lines,
                 headdim,
                 IS_CAUSAL=IS_CAUSAL,
+                BIAS_ON=BIAS_ON,
                 MASKED=False,
                 PAD_COLS=False,
                 HEADS_PADDED=HEADS_PADDED,
@@ -199,14 +214,15 @@ def _compute_row_blocks_dq(
                 offs_d,
                 k_ptrs,
                 v_ptrs,
+                bias_ptrs,
                 softmax_scale,
                 stride_kn,
                 stride_vn,
                 actual_seqlen_q,
                 actual_seqlen_k,
-                fully_masked_lines,
                 headdim,
                 IS_CAUSAL=IS_CAUSAL,
+                BIAS_ON=BIAS_ON,
                 MASKED=True,
                 PAD_COLS=pad_cols,
                 HEADS_PADDED=HEADS_PADDED,

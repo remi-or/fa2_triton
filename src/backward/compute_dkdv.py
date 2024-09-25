@@ -17,9 +17,11 @@ def _compute_single_block_dkdv(
     offs_n,
     offs_d,
     q_ptrs,
+    bias_ptrs,
     do_ptrs,
     softmax_scale,
     stride_qm,
+    stride_bm,
     stride_dom,
     actual_seqlen_q,
     actual_seqlen_k,
@@ -27,6 +29,7 @@ def _compute_single_block_dkdv(
     headdim,
     MASKED: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
+    BIAS_ON: tl.constexpr,
     PAD_ROWS: tl.constexpr,
     PAD_COLS: tl.constexpr,
     HEADS_PADDED: tl.constexpr,
@@ -34,6 +37,8 @@ def _compute_single_block_dkdv(
     # Relocate pointers
     q_ptrs = q_ptrs + I_start_m * stride_qm
     do_ptrs = do_ptrs + I_start_m * stride_dom
+    if BIAS_ON:
+        bias_ptrs = bias_ptrs + I_start_m * stride_bm
 
     # Update row variables
     offs_m_curr = I_start_m + offs_m
@@ -45,9 +50,21 @@ def _compute_single_block_dkdv(
                 PAD_ROWS or HEADS_PADDED, PAD_ROWS or HEADS_PADDED,
                 actual_seqlen_q, headdim)
     lse_i = tl.load(LSE + offs_m_curr)  # since lsm is padded to max_seqlen_q, should be good
+    if BIAS_ON:
+        bias = load_fn(
+            bias_ptrs,
+            offs_m_curr,
+            offs_n,
+            PAD_ROWS or HEADS_PADDED,
+            PAD_ROWS or HEADS_PADDED,
+            actual_seqlen_q,
+            actual_seqlen_k
+        )
 
     # Recompute P_ij = softmax(qk, dim=-1).T
     qk = tl.dot(q, tl.trans(k))
+    if BIAS_ON:
+        qk += bias / softmax_scale  # TODO: check if this is optimal
 
     # Attention and causal mask
     offs_n_causal = (offs_n - actual_seqlen_k + actual_seqlen_q)
@@ -96,6 +113,7 @@ def _compute_column_blocks_dkdv(
     Q,
     K,
     V,
+    Bias,
     DO,
     DK,
     DV,
@@ -105,6 +123,7 @@ def _compute_column_blocks_dkdv(
     stride_qm,
     stride_kn,
     stride_vn,
+    stride_bm,
     stride_dom,
     stride_dkn,
     stride_dvn,
@@ -112,6 +131,7 @@ def _compute_column_blocks_dkdv(
     actual_seqlen_k,
     headdim,
     IS_CAUSAL: tl.constexpr,
+    BIAS_ON: tl.constexpr,
     PAD_COLS: tl.constexpr,
     HEADS_PADDED: tl.constexpr,
     BLOCK_M: tl.constexpr,
@@ -140,6 +160,10 @@ def _compute_column_blocks_dkdv(
     dk_ptrs = DK + (offs_n[:, None] * stride_dkn + offs_d[None, :])
     dv_ptrs = DV + (offs_n[:, None] * stride_dvn + offs_d[None, :])
     do_ptrs = DO + (offs_m[:, None] * stride_dom + offs_d[None, :])
+    if BIAS_ON:
+        bias_ptrs = Bias + (offs_m[:, None] * stride_bm + offs_n[None, :])
+    else:
+        bias_ptrs = None
 
     # Initialize dv and dk
     dk = tl.zeros([BLOCK_N, BLOCK_HEADDIM], dtype=tl.float32)
@@ -180,9 +204,11 @@ def _compute_column_blocks_dkdv(
                 offs_n,
                 offs_d,
                 q_ptrs,
+                bias_ptrs,
                 do_ptrs,
                 softmax_scale,
                 stride_qm,
+                stride_bm,
                 stride_dom,
                 actual_seqlen_q,
                 actual_seqlen_k,
@@ -190,6 +216,7 @@ def _compute_column_blocks_dkdv(
                 headdim,
                 MASKED=True,
                 IS_CAUSAL=IS_CAUSAL,
+                BIAS_ON=BIAS_ON,
                 PAD_ROWS=True,  # TODO: fix this
                 PAD_COLS=PAD_COLS,
                 HEADS_PADDED=HEADS_PADDED,
@@ -211,9 +238,11 @@ def _compute_column_blocks_dkdv(
                 offs_n,
                 offs_d,
                 q_ptrs,
+                bias_ptrs,
                 do_ptrs,
                 softmax_scale,
                 stride_qm,
+                stride_bm,
                 stride_dom,
                 actual_seqlen_q,
                 actual_seqlen_k,
@@ -221,6 +250,7 @@ def _compute_column_blocks_dkdv(
                 headdim,
                 MASKED=False,
                 IS_CAUSAL=IS_CAUSAL,
+                BIAS_ON=BIAS_ON,
                 PAD_ROWS=True,  # TODO: fix this
                 PAD_COLS=PAD_COLS,
                 HEADS_PADDED=HEADS_PADDED,

@@ -8,7 +8,7 @@ from torch import Tensor
 
 from src.backward.compute_delta import _compute_delta
 from src.backward.kernel import _bwd_kernel
-from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic
+from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic, infer_bias_strides
 
 
 def _flash_attn_backward(
@@ -16,6 +16,7 @@ def _flash_attn_backward(
     q: Tensor,  # [batch_size, seqlen_q, nheads_q, head_dim]
     k: Tensor,  # [batch_size, seqlen_k, nheads_kv, head_dim]
     v: Tensor,  # [batch_size, seqlen_k, nheads_kv, head_dim]
+    bias: Optional[Tensor],  # [1 | batch_size, 1 | nheads_q, seqlen_q, seqlen_k]
     attention_mask: Optional[Tensor],  # [batch_size, seqlen_qk]
     o: Tensor,  # [batch_size, seqlen_q, nheads_q, head_dim]
     lse: Tensor,  # [batch_size, nheads_q, max_seqlen_q_rounded]
@@ -24,6 +25,7 @@ def _flash_attn_backward(
 ) -> Tuple[Tensor, Tensor, Tensor]:
 
     if attention_mask is not None:
+        assert bias is None, "Attention mask is not supported along with attention bias. Just use bias instead."
         assert q.size(1) == k.size(1), "Attention mask is not supported with seqlen_q != seqlen_k"
         varlen_mode = (attention_mask.size(0) > 1)
         useless_padding = attention_mask.size(1) - attention_mask.sum(-1).max().item()
@@ -75,6 +77,9 @@ def _flash_attn_backward(
         max_seqlen_q = seqlen_q
         max_seqlen_k = seqlen_k
 
+    # Infer the bias stride
+    stride_bb, stride_bh, stride_bm = infer_bias_strides(bias, batch_size, nheads_q, seqlen_q, seqlen_k)
+
     # Prepare gradient accumulators # TODO: maybe we can initialize this as empty -- check pre hook
     dq = torch.zeros_like(q, dtype=torch.float32)  # [batch_size|1, seqlen_q|sum_seqlens_qk, nheads_q, head_dim]
     dk = torch.zeros(size=(k.size(0), k.size(1), q.size(2), k.size(3)), device=k.device, dtype=k.dtype)
@@ -115,6 +120,7 @@ def _flash_attn_backward(
         q,
         k,
         v,
+        bias,
         dO,
         dq,
         dk,
@@ -125,6 +131,7 @@ def _flash_attn_backward(
         q.stride(0), q.stride(2), q.stride(1),
         k.stride(0), k.stride(2), k.stride(1),
         v.stride(0), v.stride(2), v.stride(1),
+        stride_bb, stride_bh, stride_bm,
         dO.stride(0), dO.stride(2), dO.stride(1),
         dq.stride(0), dq.stride(2), dq.stride(1),
         dk.stride(0), dk.stride(2), dk.stride(1),
@@ -141,6 +148,7 @@ def _flash_attn_backward(
         max_seqlen_k // 32,  # key for triton cache (limit number of compilations)
         VARLEN=varlen_mode,
         IS_CAUSAL=causal,
+        BIAS_ON=(bias is not None),
         BLOCK_HEADDIM=BLOCK_HEADDIM,
     )
 

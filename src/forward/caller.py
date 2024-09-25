@@ -6,7 +6,7 @@ import triton
 from torch import Tensor
 
 from src.forward.kernel import _fwd_kernel
-from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic
+from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic, infer_bias_strides
 
 
 def _flash_attn_forward(
@@ -60,24 +60,7 @@ def _flash_attn_forward(
         max_seqlen_q = seqlen_q
         max_seqlen_k = seqlen_k
 
-    # If attention bias was passed, infer its strides
-    if bias is not None:
-        assert (bias.size(2) == seqlen_q and bias.size(3) == seqlen_k), f"{bias.shape = }"
-        if bias.size(0) == 1:
-            stride_bb = 0
-        elif bias.size(0) == batch:
-            stride_bb = bias.stride(0)
-        else:
-            raise ValueError(f"Attention bias has {bias.size(0) = } while {batch = }")
-        if bias.size(1) == 1:
-            stride_bh = 0
-        elif bias.stride(1) == nheads_q:
-            stride_bh = bias.stride(1)
-        else:
-            raise ValueError(f"Attention bias has {bias.size(1) = } while {nheads_q = }")
-        stride_bm = bias.stride(2)
-    else:
-        stride_bb, stride_bh, stride_bm = 0, 0, 0
+    stride_bb, stride_bh, stride_bm = infer_bias_strides(bias, batch, nheads_q, seqlen_q, seqlen_k)
 
     # Setup output accumulator
     o = torch.zeros_like(q)

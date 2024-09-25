@@ -1,6 +1,8 @@
 import torch
 import triton
 import triton.language as tl
+from torch import Tensor
+from typing import Tuple, Optional
 
 
 def attention_pack(
@@ -52,26 +54,27 @@ def load_fn(
     return x
 
 
-@triton.jit
-def store_fn(
-    ptrs,
-    values,
-    offs_axis_0: tl.const_pointer_type,
-    offs_axis_1: tl.const_pointer_type,
-    PAD_AXIS_0: tl.constexpr,
-    PAD_AXIS_1: tl.constexpr,
-    LIM_AXIS_0: tl.constexpr,
-    LIM_AXIS_1: tl.constexpr,
-):
-    if PAD_AXIS_0 and not PAD_AXIS_1:  # rows only are padded
-        x = tl.store(ptrs, values, mask=offs_axis_0[:, None] < LIM_AXIS_0)
-    elif PAD_AXIS_0:  # rows and heads are padded
-        x = tl.store(ptrs, values, mask=(offs_axis_0[:, None] < LIM_AXIS_0) & (offs_axis_1[None, :] < LIM_AXIS_1))
-    elif not PAD_AXIS_1:  # nothing is padded
-        x = tl.store(ptrs, values)
-    else:  # only heads are padded
-        x = tl.store(ptrs, values, mask=offs_axis_1[None, :] < LIM_AXIS_1)
-    return x
+def infer_bias_strides(
+    bias: Optional[Tensor], batch: int, nheads_q: int, seqlen_q: int, seqlen_k: int,
+) -> Tuple[int, ...]:
+    if bias is not None:
+        assert (bias.size(2) == seqlen_q and bias.size(3) == seqlen_k), f"{bias.shape = }"
+        if bias.size(0) == 1:
+            stride_bb = 0
+        elif bias.size(0) == batch:
+            stride_bb = bias.stride(0)
+        else:
+            raise ValueError(f"Attention bias has {bias.size(0) = } while {batch = }")
+        if bias.size(1) == 1:
+            stride_bh = 0
+        elif bias.stride(1) == nheads_q:
+            stride_bh = bias.stride(1)
+        else:
+            raise ValueError(f"Attention bias has {bias.size(1) = } while {nheads_q = }")
+        stride_bm = bias.stride(2)
+    else:
+        stride_bb, stride_bh, stride_bm = 0, 0, 0
+    return stride_bb, stride_bh, stride_bm
 
 
 class torch_ignore_deterministic:

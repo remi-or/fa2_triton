@@ -43,7 +43,7 @@ class FlashAttnFunc(torch.autograd.Function):
         o, lse, ctx.softmax_scale = _flash_attn_forward(
             q, k, v, attention_mask=attention_mask, bias=attention_bias, causal=causal, softmax_scale=softmax_scale
         )
-        ctx.save_for_backward(q, k, v, attention_mask, o, lse)
+        ctx.save_for_backward(q, k, v, attention_bias, attention_mask, o, lse)
         ctx.causal = causal
         return o
 
@@ -57,9 +57,9 @@ class FlashAttnFunc(torch.autograd.Function):
         Return:
             three tensors, the gradients of q, k and v respectively (check forward for shape info)
         """
-        q, k, v, attention_mask, o, lse = ctx.saved_tensors
+        q, k, v, bias, attention_mask, o, lse = ctx.saved_tensors
         dq, dk, dv = _flash_attn_backward(
-            do, q, k, v, attention_mask, o, lse, causal=ctx.causal, softmax_scale=ctx.softmax_scale
+            do, q, k, v, bias, attention_mask, o, lse, causal=ctx.causal, softmax_scale=ctx.softmax_scale
         )
         return dq, dk, dv, None, None, None, None
 
