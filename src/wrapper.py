@@ -16,6 +16,7 @@ class FlashAttnFunc(torch.autograd.Function):
         k: Tensor,
         v: Tensor,
         attention_mask: Optional[Tensor] = None,
+        attention_bias: Optional[Tensor] = None,
         causal: bool = False,
         softmax_scale: Optional[Tensor] = None,
     ):
@@ -38,8 +39,9 @@ class FlashAttnFunc(torch.autograd.Function):
         q = q if q.stride(-1) == 1 else q.contiguous()
         k = k if k.stride(-1) == 1 else k.contiguous()
         v = v if v.stride(-1) == 1 else v.contiguous()
+        attention_bias = None if (attention_bias is None) else attention_bias.contiguous()
         o, lse, ctx.softmax_scale = _flash_attn_forward(
-            q, k, v, attention_mask=attention_mask, causal=causal, softmax_scale=softmax_scale
+            q, k, v, attention_mask=attention_mask, bias=attention_bias, causal=causal, softmax_scale=softmax_scale
         )
         ctx.save_for_backward(q, k, v, attention_mask, o, lse)
         ctx.causal = causal

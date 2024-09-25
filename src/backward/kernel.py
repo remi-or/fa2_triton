@@ -26,8 +26,8 @@ def early_config_prune_bwd_kernel(
         else:
             kept_configs.append(cfg)
     # If no config is left, go for the minimal config
-    if configs:
-        return configs
+    if kept_configs:
+        return kept_configs
     return [Config({"BLOCK_M1": MIN_B, "BLOCK_N1": MIN_B, "BLOCK_M2": MIN_B, "BLOCK_N2": MIN_B}, num_warps=4, num_stages=0)]
 
 

@@ -11,6 +11,7 @@ def compute_row_block(
     lse_i,
     k_ptrs,
     v_ptrs,
+    bias_ptrs,
     acc_o,
     offs_m,
     offs_n,
@@ -23,6 +24,7 @@ def compute_row_block(
     actual_seqlen_k,
     headdim,
     IS_CAUSAL: tl.constexpr,
+    BIAS_ON: tl.constexpr,
     MASKED: tl.constexpr,
     PADDED_COLS: tl.constexpr,
     PADDED_HEADS: tl.constexpr,
@@ -39,6 +41,13 @@ def compute_row_block(
         PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS,
         LIM_AXIS_0=actual_seqlen_k, LIM_AXIS_1=headdim,
     )
+    if BIAS_ON:
+        bias = load_fn(
+            bias_ptrs + I_start_n,
+            offs_m, I_start_n + offs_n,
+            PAD_AXIS_0=True, PAD_AXIS_1=PADDED_COLS,  # check
+            LIM_AXIS_0=actual_seqlen_q, LIM_AXIS_1=actual_seqlen_k,
+        )
 
     # Compute QK
     qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
@@ -51,6 +60,9 @@ def compute_row_block(
     if MASKED and IS_CAUSAL:
         causal_mask = offs_m[:, None] >= (I_start_n + offs_n - actual_seqlen_k + actual_seqlen_q)[None, :]
         qk += tl.where(causal_mask, 0, float("-inf"))
+
+    if BIAS_ON:
+        qk += bias * (1.44269504089 / softmax_scale)  # TODO: check if this is optimal
 
     m_ij = tl.maximum(tl.max(qk, 1) * softmax_scale, lse_i)
     P_ij = tl.exp2(qk * softmax_scale - m_ij[:, None])

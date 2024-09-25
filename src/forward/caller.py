@@ -14,6 +14,7 @@ def _flash_attn_forward(
     k: Tensor,  # [batch_size, seqlen_k, num_heads_kv, head_dim]
     v: Tensor,  # [batch_size, seqlen_k, num_heads_kv, head_dim]
     attention_mask: Optional[Tensor],  # [batch_size, seqlen_qk]
+    bias: Optional[Tensor],  # [1 | batch_size, 1 | num_heads_q, seqlen_q, seqlen_k]
     causal: bool = False,
     softmax_scale: Optional[float] = None,
 ) -> Tuple[Tensor, Tensor, float]:
@@ -21,6 +22,7 @@ def _flash_attn_forward(
     # Currently, variable length (varlen) mode is mutually exclusive with attention masking (TODO)
     if attention_mask is not None:
         varlen_mode = True
+        assert bias is None, "Attention mask is not supported along with attention bias. Just use bias instead."
         assert q.size(1) == k.size(1), "Attention mask is not supported with seqlen_q != seqlen_k"
     else:
         varlen_mode = False
@@ -58,6 +60,25 @@ def _flash_attn_forward(
         max_seqlen_q = seqlen_q
         max_seqlen_k = seqlen_k
 
+    # If attention bias was passed, infer its strides
+    if bias is not None:
+        assert (bias.size(2) == seqlen_q and bias.size(3) == seqlen_k), f"{bias.shape = }"
+        if bias.size(0) == 1:
+            stride_bb = 0
+        elif bias.size(0) == batch:
+            stride_bb = bias.stride(0)
+        else:
+            raise ValueError(f"Attention bias has {bias.size(0) = } while {batch = }")
+        if bias.size(1) == 1:
+            stride_bh = 0
+        elif bias.stride(1) == nheads_q:
+            stride_bh = bias.stride(1)
+        else:
+            raise ValueError(f"Attention bias has {bias.size(1) = } while {nheads_q = }")
+        stride_bm = bias.stride(2)
+    else:
+        stride_bb, stride_bh, stride_bm = 0, 0, 0
+
     # Setup output accumulator
     o = torch.zeros_like(q)
 
@@ -78,11 +99,13 @@ def _flash_attn_forward(
         v,
         o,
         lse,
+        bias,
         softmax_scale,
         q.stride(0), q.stride(2), q.stride(1),
         k.stride(0), k.stride(2), k.stride(1),
         v.stride(0), v.stride(2), v.stride(1),
         o.stride(0), o.stride(2), o.stride(1),
+        stride_bb, stride_bh, stride_bm,
         nheads_q,
         head_ratio,
         seqlen_q,
@@ -96,6 +119,7 @@ def _flash_attn_forward(
         # VARLEN=varlen_mode, IS_CAUSAL=causal, BLOCK_HEADDIM=d,
         varlen_mode,
         IS_CAUSAL=causal,
+        BIAS_ON=(bias is not None),
         BLOCK_HEADDIM=BLOCK_HEADDIM,
         PADDED_HEADS=PADDED_HEADS,
     )

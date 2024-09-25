@@ -27,8 +27,8 @@ def early_config_prune_fwd_kernel(
         else:
             kept_configs.append(cfg)
     # If no config is left, go for the minimal config
-    if configs:
-        return configs
+    if kept_configs:
+        return kept_configs
     return [Config({"BLOCK_M": MIN_B, "BLOCK_N": MIN_B}, num_warps=4, num_stages=1)]
 
 
@@ -55,11 +55,13 @@ def _fwd_kernel(
     V,
     Out,
     Lse,
+    Bias,
     softmax_scale,
     stride_qb, stride_qh, stride_qm,  # Q stride for the batch, head and sequence axis (sequence subscript is m for rows)
     stride_kb, stride_kh, stride_kn,  # Same for K (sequence subscript is n for cols)
     stride_vb, stride_vh, stride_vn,  # Same for V (sequence subscript is n for cols)
     stride_ob, stride_oh, stride_om,  # Same for O (sequence subscript is m for rows)
+    stride_bb, stride_bh, stride_bm,
     nheads_q,
     head_ratio,
     seqlen_q,
@@ -71,6 +73,7 @@ def _fwd_kernel(
     CACHE_KEY_SEQLEN_K,
     VARLEN: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
+    BIAS_ON: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
     EVEN_M: tl.constexpr,
     EVEN_N: tl.constexpr,
@@ -113,13 +116,18 @@ def _fwd_kernel(
     if fully_masked_lines >= (i_start_m+1) * BLOCK_M:
         return
 
-    # Initialize pointers to Q, K, V
+    # Initialize pointers to Q, K, V and maybe Bias
     offseted_Q = Q + off_batch * stride_qb + off_head_q * stride_qh + cu_seq_start_q * stride_qm
     q_ptrs = (offseted_Q + (offs_m[:, None] * stride_qm + offs_d[None, :]))
     offseted_K = K + off_batch * stride_kb + off_head_kv * stride_kh + cu_seq_start_k * stride_kn
     k_ptrs = (offseted_K + (offs_n[:, None] * stride_kn + offs_d[None, :]))
     offseted_V = V + off_batch * stride_vb + off_head_kv * stride_vh + cu_seq_start_k * stride_vn
     v_ptrs = (offseted_V + (offs_n[:, None] * stride_vn + offs_d[None, :]))
+    if BIAS_ON:
+        offseted_Bias = Bias + off_batch * stride_bb + off_head_kv * stride_bh + cu_seq_start_q * stride_bm
+        bias_ptrs = (offseted_Bias + (offs_m[:, None] * stride_bm + offs_n[None, :]))
+    else:
+        bias_ptrs = None
 
     # Initialize pointers to m and l
     lse_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
@@ -164,6 +172,7 @@ def _fwd_kernel(
                 lse_i,
                 k_ptrs,
                 v_ptrs,
+                bias_ptrs,
                 acc_o,
                 offs_m,
                 offs_n,
@@ -176,6 +185,7 @@ def _fwd_kernel(
                 actual_seqlen_k,
                 headdim,
                 IS_CAUSAL=IS_CAUSAL,
+                BIAS_ON=BIAS_ON,
                 MASKED=False,
                 PADDED_COLS=False,
                 PADDED_HEADS=PADDED_HEADS,
@@ -193,6 +203,7 @@ def _fwd_kernel(
                 lse_i,
                 k_ptrs,
                 v_ptrs,
+                bias_ptrs,
                 acc_o,
                 offs_m,
                 offs_n,
@@ -205,6 +216,7 @@ def _fwd_kernel(
                 actual_seqlen_k,
                 headdim,
                 IS_CAUSAL=IS_CAUSAL,
+                BIAS_ON=BIAS_ON,
                 MASKED=True,
                 PADDED_COLS=pad_cols,
                 PADDED_HEADS=PADDED_HEADS,
