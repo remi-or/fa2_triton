@@ -1,6 +1,3 @@
-import os.path as osp
-import sys
-
 import pytest
 import torch
 
@@ -11,7 +8,8 @@ from tests.utils import compare_results_fa, generate_attention_mask, generate_te
 
 def _test_fwd_bwd(
     batch_size: int,
-    num_heads: int,
+    nheads_q: int,
+    nheads_kv: int,
     seqlen_q: int,
     seqlen_k: int,
     head_dim: int,
@@ -20,7 +18,7 @@ def _test_fwd_bwd(
     dtype: torch.dtype = torch.float16,
 ) -> None:
     # Prepare data
-    q, k, v, do = generate_test_data(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, dtype)
+    q, k, v, do = generate_test_data(batch_size, nheads_q, nheads_kv, seqlen_q, seqlen_k, head_dim, dtype)
     attn_mask = generate_attention_mask(q) if use_attention else None
     # Compute reference
     out_ref = attention_ref(q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, causal=causal)
@@ -55,11 +53,12 @@ def _test_fwd_bwd(
     ],
 )
 # @pytest.mark.parametrize("dropout_p", [0.0, 0.17]) TODO
-@pytest.mark.parametrize("num_heads", [9])
+@pytest.mark.parametrize("nheads_q, nheads_kv", [(8, 2), (9, 9)])
 @pytest.mark.parametrize("batch_size", [4])
 def test_fwd_bwd(
     batch_size: int,
-    num_heads: int,
+    nheads_q: int,
+    nheads_kv: int,
     seqlen_q: int,
     seqlen_k: int,
     swap_seqlens: bool,
@@ -72,4 +71,4 @@ def test_fwd_bwd(
         seqlen_q, seqlen_k = seqlen_k, seqlen_q
     if use_attention:
         seqlen_q = seqlen_k
-    _test_fwd_bwd(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, causal, use_attention, dtype)
+    _test_fwd_bwd(batch_size, nheads_q, nheads_kv, seqlen_q, seqlen_k, head_dim, causal, use_attention, dtype)

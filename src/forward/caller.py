@@ -10,9 +10,9 @@ from src.utils import attention_pack, attention_unpack, torch_ignore_determinist
 
 
 def _flash_attn_forward(
-    q: Tensor,  # [batch_size, seqlen_q, num_heads, head_dim]
-    k: Tensor,  # [batch_size, seqlen_k, num_heads, head_dim]
-    v: Tensor,  # [batch_size, seqlen_k, num_heads, head_dim]
+    q: Tensor,  # [batch_size, seqlen_q, num_heads_q, head_dim]
+    k: Tensor,  # [batch_size, seqlen_k, num_heads_kv, head_dim]
+    v: Tensor,  # [batch_size, seqlen_k, num_heads_kv, head_dim]
     attention_mask: Optional[Tensor],  # [batch_size, seqlen_qk]
     causal: bool = False,
     softmax_scale: Optional[float] = None,
@@ -26,11 +26,12 @@ def _flash_attn_forward(
         varlen_mode = False
 
     # Retrieve and check shapes (TODO: remove as much as possible of those)
-    batch, seqlen_q, nheads, head_dim = q.shape
-    _, seqlen_k, _, _ = k.shape
-    assert k.shape == (batch, seqlen_k, nheads, head_dim)
-    assert v.shape == (batch, seqlen_k, nheads, head_dim)
-    assert head_dim <= 128, "FlashAttention only support head dimensions up to 128"
+    batch, seqlen_q, nheads_q, head_dim = q.shape
+    _, seqlen_k, nheads_kv, _ = k.shape
+    assert nheads_q % nheads_kv == 0, f"{nheads_q = } is not divisible by {nheads_kv =}"
+    assert k.shape == (batch, seqlen_k, nheads_kv, head_dim), f"{k.shape = } <> {(batch, seqlen_k, nheads_kv, head_dim) = }"
+    assert v.shape == (batch, seqlen_k, nheads_kv, head_dim), f"{v.shape = } <> {(batch, seqlen_k, nheads_kv, head_dim) = }"
+    assert head_dim <= 128, f"FlashAttention only support head dimensions up to 128, got {head_dim = }"
     assert q.dtype == k.dtype == v.dtype, "All tensors must have the same type"
     assert q.dtype in [torch.float16, torch.bfloat16], "Only support fp16 and bf16"
     assert q.is_cuda and k.is_cuda and v.is_cuda
@@ -62,14 +63,15 @@ def _flash_attn_forward(
 
     # Setup LSE accumulators: in varlen mode, batch is still equal to the nb of queries
     max_seqlen_q_rounded = math.ceil(max_seqlen_q / 128) * 128  # wastefull in varlen and not (just use mask)
-    lse = torch.zeros((batch, nheads, max_seqlen_q_rounded), device=q.device, dtype=torch.float32)
+    lse = torch.zeros((batch, nheads_q, max_seqlen_q_rounded), device=q.device, dtype=torch.float32)
 
     # Infer problem size and launch kernel
     BLOCK_HEADDIM = max(triton.next_power_of_2(head_dim), 16)
     PADDED_HEADS = (BLOCK_HEADDIM > head_dim)
     # BLOCK = 128
     # num_warps = 4 if head_dim <= 64 else 8
-    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch * nheads)  # noqa: E731
+    head_ratio = nheads_q // nheads_kv
+    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch * nheads_q)  # noqa: E731
     _fwd_kernel[grid](
         q,
         k,
@@ -81,7 +83,8 @@ def _flash_attn_forward(
         k.stride(0), k.stride(2), k.stride(1),
         v.stride(0), v.stride(2), v.stride(1),
         o.stride(0), o.stride(2), o.stride(1),
-        nheads,
+        nheads_q,
+        head_ratio,
         seqlen_q,
         cum_seqlens_q,  # array containing [seqlen_q_1, ..., seqlen_q_B] , if VARLEN, else None
         seqlen_k,

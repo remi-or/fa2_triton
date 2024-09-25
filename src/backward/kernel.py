@@ -71,7 +71,8 @@ def _bwd_kernel(
     stride_dqb, stride_dqh, stride_dqm,
     stride_dkb, stride_dkh, stride_dkn,
     stride_dvb, stride_dvh, stride_dvn,
-    nheads,
+    nheads_q,
+    head_ratio,
     seqlen_q,
     cum_seqlens_q,
     seqlen_k,
@@ -97,8 +98,9 @@ def _bwd_kernel(
     # Locate kernel inside the grid
     pid = tl.program_id(0)
     off_head_and_batch = tl.program_id(1)
-    off_batch = off_head_and_batch // nheads
-    off_head = off_head_and_batch % nheads
+    off_batch = off_head_and_batch // nheads_q
+    off_head_q = off_head_and_batch % nheads_q
+    off_head_kv = off_head_q // head_ratio
 
     # If in variable length mode, retrieve the actual sequence lengths
     if VARLEN:
@@ -114,13 +116,13 @@ def _bwd_kernel(
         actual_seqlen_k = seqlen_k
 
     # Offset matrix pointers for batch and head
-    Q += off_batch * stride_qb + off_head * stride_qh + cu_seq_start_q * stride_qm
-    K += off_batch * stride_kb + off_head * stride_kh + cu_seq_start_k * stride_kn
-    V += off_batch * stride_vb + off_head * stride_vh + cu_seq_start_k * stride_vn
-    DO += off_batch * stride_dob + off_head * stride_doh + cu_seq_start_q * stride_dom
-    DQ += off_batch * stride_dqb + off_head * stride_dqh + cu_seq_start_q * stride_dqm
-    DK += off_batch * stride_dkb + off_head * stride_dkh + cu_seq_start_k * stride_dkn
-    DV += off_batch * stride_dvb + off_head * stride_dvh + cu_seq_start_k * stride_dvn
+    Q += off_batch * stride_qb + off_head_q * stride_qh + cu_seq_start_q * stride_qm
+    K += off_batch * stride_kb + off_head_kv * stride_kh + cu_seq_start_k * stride_kn
+    V += off_batch * stride_vb + off_head_kv * stride_vh + cu_seq_start_k * stride_vn
+    DO += off_batch * stride_dob + off_head_q * stride_doh + cu_seq_start_q * stride_dom
+    DQ += off_batch * stride_dqb + off_head_q * stride_dqh + cu_seq_start_q * stride_dqm
+    DK += off_batch * stride_dkb + off_head_q * stride_dkh + cu_seq_start_k * stride_dkn
+    DV += off_batch * stride_dvb + off_head_q * stride_dvh + cu_seq_start_k * stride_dvn
 
     # Offset vector pointers for batch and head
     D += off_head_and_batch * seqlen_q_rounded

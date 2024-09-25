@@ -1,23 +1,46 @@
 import triton
 import triton.language as tl
+from triton import Config
 
+from typing import List, Any, Dict
 from src.forward.compute_row_blocks import compute_row_block
 from src.utils import load_fn
 
 # TODO: exit causal blocks early
 # TODO: can we initialize accO to empty instead of 0?
 
+MIN_B = 32
+
+
+def early_config_prune_fwd_kernel(
+    configs: List[Config],
+    named_args: Dict[str, Any],
+    **kwargs,
+) -> List[Config]:
+    # Remove the configs where BLOCK_ > seqlen_
+    kept_configs = []
+    for cfg in configs:
+        block_m_too_large = cfg.kwargs["BLOCK_M"] > named_args["seqlen_q"]
+        block_n_too_large = cfg.kwargs["BLOCK_N"] > named_args["seqlen_k"]
+        if (block_m_too_large or block_n_too_large):
+            pass
+        else:
+            kept_configs.append(cfg)
+    # If no config is left, go for the minimal config
+    if configs:
+        return configs
+    return [Config({"BLOCK_M": MIN_B, "BLOCK_N": MIN_B}, num_warps=4, num_stages=1)]
+
 
 @triton.autotune(
     configs=[
+        triton.Config({"BLOCK_M": MIN_B, "BLOCK_N": MIN_B}, num_warps=4, num_stages=1),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=8, num_stages=1),
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=8, num_stages=1),
         triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=8, num_stages=1),
     ],
     key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"],
+    prune_configs_by={"early_config_prune": early_config_prune_fwd_kernel},
 )
 @triton.heuristics(
     {
@@ -37,7 +60,8 @@ def _fwd_kernel(
     stride_kb, stride_kh, stride_kn,  # Same for K (sequence subscript is n for cols)
     stride_vb, stride_vh, stride_vn,  # Same for V (sequence subscript is n for cols)
     stride_ob, stride_oh, stride_om,  # Same for O (sequence subscript is m for rows)
-    nheads,
+    nheads_q,
+    head_ratio,
     seqlen_q,
     cum_seqlens_q,
     seqlen_k,
@@ -57,8 +81,9 @@ def _fwd_kernel(
     # Locate kernel inside the grid
     i_start_m = tl.program_id(0)  # current block in the Q matrix
     off_head_and_batch = tl.program_id(1)
-    off_head = off_head_and_batch % nheads
-    off_batch = off_head_and_batch // nheads
+    off_head_q = off_head_and_batch % nheads_q
+    off_head_kv = off_head_q // head_ratio
+    off_batch = off_head_and_batch // nheads_q
 
     # Infer actual sequence length of Q and the offset to the last sequence
     if VARLEN:
@@ -89,11 +114,11 @@ def _fwd_kernel(
         return
 
     # Initialize pointers to Q, K, V
-    offseted_Q = Q + off_batch * stride_qb + off_head * stride_qh + cu_seq_start_q * stride_qm
+    offseted_Q = Q + off_batch * stride_qb + off_head_q * stride_qh + cu_seq_start_q * stride_qm
     q_ptrs = (offseted_Q + (offs_m[:, None] * stride_qm + offs_d[None, :]))
-    offseted_K = K + off_batch * stride_kb + off_head * stride_kh + cu_seq_start_k * stride_kn
+    offseted_K = K + off_batch * stride_kb + off_head_kv * stride_kh + cu_seq_start_k * stride_kn
     k_ptrs = (offseted_K + (offs_n[:, None] * stride_kn + offs_d[None, :]))
-    offseted_V = V + off_batch * stride_vb + off_head * stride_vh + cu_seq_start_k * stride_vn
+    offseted_V = V + off_batch * stride_vb + off_head_kv * stride_vh + cu_seq_start_k * stride_vn
     v_ptrs = (offseted_V + (offs_n[:, None] * stride_vn + offs_d[None, :]))
 
     # Initialize pointers to m and l
@@ -207,7 +232,7 @@ def _fwd_kernel(
     out_ptrs = (
         Out
         + off_batch * stride_ob
-        + off_head * stride_oh
+        + off_head_q * stride_oh
         + cu_seq_start_q * stride_om
         + (offs_m[:, None] * stride_om + offs_d[None, :])
     )
