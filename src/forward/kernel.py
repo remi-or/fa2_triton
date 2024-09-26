@@ -1,23 +1,46 @@
 import triton
 import triton.language as tl
+from triton import Config
 
+from typing import List, Any, Dict
 from src.forward.compute_row_blocks import compute_row_block
 from src.utils import load_fn
 
 # TODO: exit causal blocks early
 # TODO: can we initialize accO to empty instead of 0?
 
+MIN_B = 32
+
+
+def early_config_prune_fwd_kernel(
+    configs: List[Config],
+    named_args: Dict[str, Any],
+    **kwargs,
+) -> List[Config]:
+    # Remove the configs where BLOCK_ > seqlen_
+    kept_configs = []
+    for cfg in configs:
+        block_m_too_large = cfg.kwargs["BLOCK_M"] > named_args["seqlen_q"]
+        block_n_too_large = cfg.kwargs["BLOCK_N"] > named_args["seqlen_k"]
+        if (block_m_too_large or block_n_too_large):
+            pass
+        else:
+            kept_configs.append(cfg)
+    # If no config is left, go for the minimal config
+    if kept_configs:
+        return kept_configs
+    return [Config({"BLOCK_M": MIN_B, "BLOCK_N": MIN_B}, num_warps=4, num_stages=1)]
+
 
 @triton.autotune(
     configs=[
+        triton.Config({"BLOCK_M": MIN_B, "BLOCK_N": MIN_B}, num_warps=4, num_stages=1),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=8, num_stages=1),
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=8, num_stages=1),
         triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=8, num_stages=1),
     ],
     key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"],
+    prune_configs_by={"early_config_prune": early_config_prune_fwd_kernel},
 )
 @triton.heuristics(
     {
@@ -32,12 +55,17 @@ def _fwd_kernel(
     V,
     Out,
     Lse,
+    Bias,
     softmax_scale,
+    dropout_p,
+    dropout_seed,
     stride_qb, stride_qh, stride_qm,  # Q stride for the batch, head and sequence axis (sequence subscript is m for rows)
     stride_kb, stride_kh, stride_kn,  # Same for K (sequence subscript is n for cols)
     stride_vb, stride_vh, stride_vn,  # Same for V (sequence subscript is n for cols)
     stride_ob, stride_oh, stride_om,  # Same for O (sequence subscript is m for rows)
-    nheads,
+    stride_bb, stride_bh, stride_bm,
+    nheads_q,
+    head_ratio,
     seqlen_q,
     cum_seqlens_q,
     seqlen_k,
@@ -46,7 +74,9 @@ def _fwd_kernel(
     CACHE_KEY_SEQLEN_Q,
     CACHE_KEY_SEQLEN_K,
     VARLEN: tl.constexpr,
+    USE_DROPOUT: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
+    BIAS_ON: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
     EVEN_M: tl.constexpr,
     EVEN_N: tl.constexpr,
@@ -57,8 +87,9 @@ def _fwd_kernel(
     # Locate kernel inside the grid
     i_start_m = tl.program_id(0)  # current block in the Q matrix
     off_head_and_batch = tl.program_id(1)
-    off_head = off_head_and_batch % nheads
-    off_batch = off_head_and_batch // nheads
+    off_head_q = off_head_and_batch % nheads_q
+    off_head_kv = off_head_q // head_ratio
+    off_batch = off_head_and_batch // nheads_q
 
     # Infer actual sequence length of Q and the offset to the last sequence
     if VARLEN:
@@ -89,12 +120,24 @@ def _fwd_kernel(
         return
 
     # Initialize pointers to Q, K, V
-    offseted_Q = Q + off_batch * stride_qb + off_head * stride_qh + cu_seq_start_q * stride_qm
+    offseted_Q = Q + off_batch * stride_qb + off_head_q * stride_qh + cu_seq_start_q * stride_qm
     q_ptrs = (offseted_Q + (offs_m[:, None] * stride_qm + offs_d[None, :]))
-    offseted_K = K + off_batch * stride_kb + off_head * stride_kh + cu_seq_start_k * stride_kn
+    offseted_K = K + off_batch * stride_kb + off_head_kv * stride_kh + cu_seq_start_k * stride_kn
     k_ptrs = (offseted_K + (offs_n[:, None] * stride_kn + offs_d[None, :]))
-    offseted_V = V + off_batch * stride_vb + off_head * stride_vh + cu_seq_start_k * stride_vn
+    offseted_V = V + off_batch * stride_vb + off_head_kv * stride_vh + cu_seq_start_k * stride_vn
     v_ptrs = (offseted_V + (offs_n[:, None] * stride_vn + offs_d[None, :]))
+    # ...and maybe bias
+    if BIAS_ON:
+        offseted_Bias = Bias + off_batch * stride_bb + off_head_kv * stride_bh + cu_seq_start_q * stride_bm
+        bias_ptrs = (offseted_Bias + (offs_m[:, None] * stride_bm + offs_n[None, :]))
+    else:
+        bias_ptrs = None
+    # ...and maybe dropout
+    if USE_DROPOUT:
+        dropout_off = actual_seqlen_k * (cu_seq_start_q + actual_seqlen_q * (off_head_q + nheads_q * off_batch))
+        dropout_offs = dropout_off + offs_m[:, None] * actual_seqlen_k + offs_n[None, :]
+    else:
+        dropout_offs = None
 
     # Initialize pointers to m and l
     lse_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
@@ -139,18 +182,24 @@ def _fwd_kernel(
                 lse_i,
                 k_ptrs,
                 v_ptrs,
+                bias_ptrs,
                 acc_o,
                 offs_m,
                 offs_n,
                 offs_d,
                 softmax_scale,
+                dropout_p,
+                dropout_seed,
+                dropout_offs,
                 stride_kn,
                 stride_vn,
                 next_start_n,
                 actual_seqlen_q,
                 actual_seqlen_k,
                 headdim,
+                USE_DROPOUT=USE_DROPOUT,
                 IS_CAUSAL=IS_CAUSAL,
+                BIAS_ON=BIAS_ON,
                 MASKED=False,
                 PADDED_COLS=False,
                 PADDED_HEADS=PADDED_HEADS,
@@ -168,18 +217,24 @@ def _fwd_kernel(
                 lse_i,
                 k_ptrs,
                 v_ptrs,
+                bias_ptrs,
                 acc_o,
                 offs_m,
                 offs_n,
                 offs_d,
                 softmax_scale,
+                dropout_p,
+                dropout_seed,
+                dropout_offs,
                 stride_kn,
                 stride_vn,
                 I_start_n,
                 actual_seqlen_q,
                 actual_seqlen_k,
                 headdim,
+                USE_DROPOUT=USE_DROPOUT,
                 IS_CAUSAL=IS_CAUSAL,
+                BIAS_ON=BIAS_ON,
                 MASKED=True,
                 PADDED_COLS=pad_cols,
                 PADDED_HEADS=PADDED_HEADS,
@@ -188,7 +243,10 @@ def _fwd_kernel(
             )
 
     # Final scaling of the output accumulator
-    o_scale = tl.exp2(m_i - lse_i)
+    if USE_DROPOUT:
+        o_scale = tl.exp2((m_i - lse_i) - tl.log2(1 - dropout_p))
+    else:
+        o_scale = tl.exp2(m_i - lse_i)
     acc_o = acc_o * o_scale[:, None]
 
     # For seqlen_q >> seqlen_k, there might be entire lines masked, so we account for that
@@ -207,7 +265,7 @@ def _fwd_kernel(
     out_ptrs = (
         Out
         + off_batch * stride_ob
-        + off_head * stride_oh
+        + off_head_q * stride_oh
         + cu_seq_start_q * stride_om
         + (offs_m[:, None] * stride_om + offs_d[None, :])
     )

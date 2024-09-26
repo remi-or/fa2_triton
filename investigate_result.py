@@ -3,64 +3,56 @@ import os
 import matplotlib.pyplot as plt
 import torch
 
-from src.reference_implementation import attention_ref
-from src.wrapper import flash_attn_func
-from tests.test_repeatability import _test_repeatability
-from tests.utils import (
-    compare_results_fa,
-    compare_tensors,
-    generate_attention_mask,
-    generate_test_data,
-    start_and_end,
-)
+from tests.utils import start_and_end, compare_results_fa, compare_tensors
+from tests.core import _test_core_fn
 
 PLOT_HEAD_INDEX = None
 
-batch_size = 4
-num_heads = 9
+batch_size = 1
+num_heads = 1
 
-seqlen_q = 127
-seqlen_k = 513
+seqlen_q = 32
+seqlen_k = 32
 swap_seqlens = False
-use_attention = True
+use_attention = False
 
 head_dim = 32
-causal = True
+causal = False
 dtype = torch.float16
 
 forward_only = False
 
 
-
 if __name__ == "__main__":
-    os.environ["TRITON_PRINT_AUTOTUNING"]="1"
-    # os.environ["TRITON_INTERPRET"] = "1"
+    os.environ["TRITON_PRINT_AUTOTUNING"] = "1"
 
     if swap_seqlens:
         seqlen_q, seqlen_k = seqlen_k, seqlen_q
     if use_attention:
         seqlen_q = seqlen_k
 
-    # Prepare data
-    q, k, v, do = generate_test_data(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, dtype)
-    q_copy, k_copy, v_copy = q.clone(), k.clone(), v.clone()
-    attn_mask = generate_attention_mask(q, True) if use_attention else None
-
-    # Compute reference
-    out_ref = attention_ref(q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, causal=causal)
-    # Compute pytorch reference
-    out_pt = attention_ref(
-        q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, causal=causal, upcast=False, reorder_ops=True
+    q, k, v, out, out_pt, out_ref, do = _test_core_fn(
+        batch_size=batch_size,
+        nheads_q=num_heads,
+        nheads_kv=num_heads,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        causal=causal,
+        dropout_p=0.99,
+        use_attention=use_attention,
+        use_bias=False,
+        dtype=dtype,
+        FORWARD_ONLY=True,
+        RETURN=True,
     )
-    # Compute ours
-    out = flash_attn_func(q, k, v, attn_mask, causal)
 
     if forward_only:
         # Display part of the results
         print("Ours:", start_and_end(out, 3))
         print("Ref:", start_and_end(out_ref, 3))
         print("Pt:", start_and_end(out_pt, 3))
-        
+
         # Save a glimpse of the results
         fig, axs = plt.subplots(1, 3)
         axs[0].imshow(out.flatten(start_dim=1, end_dim=2)[-1].numpy(force=True))
@@ -79,20 +71,18 @@ if __name__ == "__main__":
     dq_ref, dk_ref, dv_ref = torch.autograd.grad(out_ref, (q, k, v), do, retain_graph=True)
     dq_pt, dk_pt, dv_pt = torch.autograd.grad(out_pt, (q, k, v), do, retain_graph=True)
 
+    print(dq / dq_ref)
+
     # Concatenate them along the number of heads
     if PLOT_HEAD_INDEX is None:
         dq, dq_pt, dq_ref = [x.flatten(start_dim=1, end_dim=2) for x in (dq, dq_pt, dq_ref)]
         dk, dk_pt, dk_ref = [x.flatten(start_dim=1, end_dim=2) for x in (dk, dk_pt, dk_ref)]
         dv, dv_pt, dv_ref = [x.flatten(start_dim=1, end_dim=2) for x in (dv, dv_pt, dv_ref)]
 
-    assert (q == q_copy).all()
-    assert (k == k_copy).all()
-    assert (v == v_copy).all()
-
     # Display part of the results
-    print("Ours:", start_and_end(dv, 3))
-    print("Ref:", start_and_end(dv_ref, 3))
-    print("Pt:", start_and_end(dv_pt, 3))
+    print("Ours:", start_and_end(dq, 3))
+    print("Ref:", start_and_end(dq_ref, 3))
+    print("Pt:", start_and_end(dq_pt, 3))
 
     # Save a glimpse of the results
     fig, axs = plt.subplots(3, 3)
@@ -123,7 +113,8 @@ if __name__ == "__main__":
 
     # Compare results
     compare_results_fa(q, k, v, do, out, out_ref, out_pt)
-    
+
+
 # headdim=40, seqlen=(128, 117)
 
 # There seems to be some problem with Triton pipelining that makes results wrong for

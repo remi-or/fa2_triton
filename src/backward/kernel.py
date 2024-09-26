@@ -26,8 +26,8 @@ def early_config_prune_bwd_kernel(
         else:
             kept_configs.append(cfg)
     # If no config is left, go for the minimal config
-    if configs:
-        return configs
+    if kept_configs:
+        return kept_configs
     return [Config({"BLOCK_M1": MIN_B, "BLOCK_N1": MIN_B, "BLOCK_M2": MIN_B, "BLOCK_N2": MIN_B}, num_warps=4, num_stages=0)]
 
 
@@ -57,6 +57,7 @@ def _bwd_kernel(
     Q,
     K,
     V,
+    Bias,
     DO,
     DQ,
     DK,
@@ -64,14 +65,18 @@ def _bwd_kernel(
     LSE,
     D,
     softmax_scale,
+    dropout_p,
+    dropout_seed,
     stride_qb, stride_qh, stride_qm,
     stride_kb, stride_kh, stride_kn,
     stride_vb, stride_vh, stride_vn,
+    stride_bb, stride_bh, stride_bm,
     stride_dob, stride_doh, stride_dom,
     stride_dqb, stride_dqh, stride_dqm,
     stride_dkb, stride_dkh, stride_dkn,
     stride_dvb, stride_dvh, stride_dvn,
-    nheads,
+    nheads_q,
+    head_ratio,
     seqlen_q,
     cum_seqlens_q,
     seqlen_k,
@@ -82,6 +87,8 @@ def _bwd_kernel(
     CACHE_KEY_SEQLEN_K,
     VARLEN: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
+    BIAS_ON: tl.constexpr,
+    USE_DROPOUT: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
     BLOCK_M1: tl.constexpr,
     BLOCK_N1: tl.constexpr,
@@ -97,8 +104,9 @@ def _bwd_kernel(
     # Locate kernel inside the grid
     pid = tl.program_id(0)
     off_head_and_batch = tl.program_id(1)
-    off_batch = off_head_and_batch // nheads
-    off_head = off_head_and_batch % nheads
+    off_batch = off_head_and_batch // nheads_q
+    off_head_q = off_head_and_batch % nheads_q
+    off_head_kv = off_head_q // head_ratio
 
     # If in variable length mode, retrieve the actual sequence lengths
     if VARLEN:
@@ -114,13 +122,19 @@ def _bwd_kernel(
         actual_seqlen_k = seqlen_k
 
     # Offset matrix pointers for batch and head
-    Q += off_batch * stride_qb + off_head * stride_qh + cu_seq_start_q * stride_qm
-    K += off_batch * stride_kb + off_head * stride_kh + cu_seq_start_k * stride_kn
-    V += off_batch * stride_vb + off_head * stride_vh + cu_seq_start_k * stride_vn
-    DO += off_batch * stride_dob + off_head * stride_doh + cu_seq_start_q * stride_dom
-    DQ += off_batch * stride_dqb + off_head * stride_dqh + cu_seq_start_q * stride_dqm
-    DK += off_batch * stride_dkb + off_head * stride_dkh + cu_seq_start_k * stride_dkn
-    DV += off_batch * stride_dvb + off_head * stride_dvh + cu_seq_start_k * stride_dvn
+    Q += off_batch * stride_qb + off_head_q * stride_qh + cu_seq_start_q * stride_qm
+    K += off_batch * stride_kb + off_head_kv * stride_kh + cu_seq_start_k * stride_kn
+    V += off_batch * stride_vb + off_head_kv * stride_vh + cu_seq_start_k * stride_vn
+    DO += off_batch * stride_dob + off_head_q * stride_doh + cu_seq_start_q * stride_dom
+    DQ += off_batch * stride_dqb + off_head_q * stride_dqh + cu_seq_start_q * stride_dqm
+    DK += off_batch * stride_dkb + off_head_q * stride_dkh + cu_seq_start_k * stride_dkn
+    DV += off_batch * stride_dvb + off_head_q * stride_dvh + cu_seq_start_k * stride_dvn
+    if BIAS_ON:
+        Bias += off_batch * stride_bb + off_head_q * stride_bh + cu_seq_start_q * stride_bm
+    if USE_DROPOUT:
+        Dropout = actual_seqlen_k * (cu_seq_start_q + actual_seqlen_q * (off_head_q + nheads_q * off_batch))
+    else:
+        Dropout = None
 
     # Offset vector pointers for batch and head
     D += off_head_and_batch * seqlen_q_rounded
@@ -132,11 +146,11 @@ def _bwd_kernel(
         pad_cols = (not EVEN_N1) or (VARLEN and ((i_start_n + 1) * BLOCK_N1 > actual_seqlen_k))
         _compute_column_blocks_dkdv(
             i_start_n * BLOCK_N1,
-            Q, K, V, DO, DK, DV, LSE, D,
-            softmax_scale,
-            stride_qm, stride_kn, stride_vn, stride_dom, stride_dkn, stride_dvn,
+            Q, K, V, Bias, Dropout, DO, DK, DV, LSE, D,
+            softmax_scale, dropout_p, dropout_seed,
+            stride_qm, stride_kn, stride_vn, stride_bm, stride_dom, stride_dkn, stride_dvn,
             actual_seqlen_q, actual_seqlen_k, headdim,
-            IS_CAUSAL=IS_CAUSAL,
+            IS_CAUSAL=IS_CAUSAL, BIAS_ON=BIAS_ON, USE_DROPOUT=USE_DROPOUT,
             PAD_COLS=pad_cols, HEADS_PADDED=HEADS_PADDED,
             BLOCK_M=BLOCK_M1, BLOCK_N=BLOCK_N1, BLOCK_HEADDIM=BLOCK_HEADDIM,
         )
@@ -147,11 +161,11 @@ def _bwd_kernel(
         pad_rows = (not EVEN_M2) or (VARLEN and ((i_start_m + 1) * BLOCK_M2 > actual_seqlen_q))
         _compute_row_blocks_dq(
             i_start_m * BLOCK_M2,
-            Q, K, V, DO, DQ, LSE, D,
-            softmax_scale,
-            stride_qm, stride_kn, stride_vn, stride_dom, stride_dqm,
+            Q, K, V, Bias, Dropout, DO, DQ, LSE, D,
+            softmax_scale, dropout_p, dropout_seed,
+            stride_qm, stride_kn, stride_vn, stride_bm, stride_dom, stride_dqm,
             actual_seqlen_q, actual_seqlen_k, headdim,
-            VARLEN=VARLEN, IS_CAUSAL=IS_CAUSAL,
+            VARLEN=VARLEN, IS_CAUSAL=IS_CAUSAL, BIAS_ON=BIAS_ON, USE_DROPOUT=USE_DROPOUT,
             PAD_ROWS=pad_rows, HEADS_PADDED=HEADS_PADDED,
             BLOCK_M=BLOCK_M2, BLOCK_N=BLOCK_N2, BLOCK_HEADDIM=BLOCK_HEADDIM,
             EVEN_N=EVEN_N2,

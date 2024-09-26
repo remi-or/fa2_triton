@@ -1,41 +1,16 @@
 import pytest
 import torch
 
-from src.reference_implementation import attention_ref
-from src.wrapper import flash_attn_func
-from tests.utils import compare_results_fa, generate_attention_mask, generate_test_data
-
-
-def _test_fwd_only(
-    batch_size: int,
-    num_heads: int,
-    seqlen_q: int,
-    seqlen_k: int,
-    head_dim: int,
-    causal: bool,
-    use_attention: bool,
-    dtype: torch.dtype = torch.float16,
-) -> None:
-    # Prepare data
-    q, k, v, _ = generate_test_data(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, dtype)
-    attn_mask = generate_attention_mask(q) if use_attention else None
-    # Compute reference
-    out_ref = attention_ref(q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, causal=causal)
-    # Compute pytorch reference
-    out_pt = attention_ref(q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, causal=causal,
-                           upcast=False, reorder_ops=True)
-    # Compute ours
-    out = flash_attn_func(q, k, v, attn_mask, None, causal)
-    # Compare results
-    compare_results_fa(q, k, v, None, out, out_ref, out_pt)
+from tests.core import _test_core_fn
 
 
 @pytest.mark.parametrize("dtype", ([torch.float16, torch.bfloat16]))
 # @pytest.mark.parametrize("alibi", [False, True])
 # @pytest.mark.parametrize("local", [False, True]) # TODO: add support for window size?
+@pytest.mark.parametrize("dropout_p", [0, 0.1])
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("head_dim", [32, 40, 59, 64, 80, 96, 111, 128])  # TODO: add support for head dim > 128, 160, 192, 224, 256])
-@pytest.mark.parametrize("swap_seqlens, use_attention", [(False, True), (False, False), (True, False)])
+@pytest.mark.parametrize("swap_seqlens, use_attention, use_bias", [(False, False, True), (True, False, True)])
 @pytest.mark.parametrize(
     "seqlen_q,seqlen_k",
     [
@@ -54,7 +29,7 @@ def _test_fwd_only(
 # @pytest.mark.parametrize("dropout_p", [0.0, 0.17]) TODO
 @pytest.mark.parametrize("num_heads", [9])
 @pytest.mark.parametrize("batch_size", [4])
-def test_ragged(
+def test_fwd_only(
     batch_size: int,
     num_heads: int,
     seqlen_q: int,
@@ -62,11 +37,27 @@ def test_ragged(
     swap_seqlens: bool,
     head_dim: int,
     causal: bool,
+    dropout_p: float,
     use_attention: bool,
+    use_bias: bool,
     dtype: torch.dtype,
 ) -> None:
     if swap_seqlens:
         seqlen_q, seqlen_k = seqlen_k, seqlen_q
     if use_attention:
         seqlen_q = seqlen_k
-    _test_fwd_only(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, causal, use_attention, dtype)
+    _test_core_fn(
+        batch_size=batch_size,
+        nheads_q=num_heads,
+        nheads_kv=num_heads,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        causal=causal,
+        dropout_p=dropout_p,
+        use_attention=use_attention,
+        use_bias=use_bias,
+        dtype=dtype,
+        FORWARD_ONLY=True,
+        RETURN=False,
+    )

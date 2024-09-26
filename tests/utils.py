@@ -2,39 +2,46 @@ import torch
 from torch import Tensor
 from typing import Tuple, Optional
 import warnings
+import triton
+import triton.language as tl
+
 
 def generate_test_data(
     batch_size: int,
-    num_heads: int,
+    nheads_q: int,
+    nheads_kv: int,
     seqlen_q: int,
     seqlen_k: int,
     head_dim: int,
     dtype: torch.dtype,
     seed: int = 0,
+    device: str = "cuda",
 ) -> Tuple[Tensor, ...]:
     """Generate the data necessary for a test of the FlashAttention2 algorithm: Q, K, V and dO."""
-    torch.manual_seed(seed) 
-    Q = (torch.empty((batch_size, seqlen_q, num_heads, head_dim), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
-    K = (torch.empty((batch_size, seqlen_k, num_heads, head_dim), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
-    V = (torch.empty((batch_size, seqlen_k, num_heads, head_dim), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
+    torch.manual_seed(seed)
+    Q = (torch.empty((batch_size, seqlen_q, nheads_q, head_dim), dtype=dtype, device=device).normal_(mean=0.0, std=0.5).requires_grad_())
+    K = (torch.empty((batch_size, seqlen_k, nheads_kv, head_dim), dtype=dtype, device=device).normal_(mean=0.0, std=0.5).requires_grad_())
+    V = (torch.empty((batch_size, seqlen_k, nheads_kv, head_dim), dtype=dtype, device=device).normal_(mean=0.0, std=0.5).requires_grad_())
     dO = torch.randn_like(Q)
     return Q, K, V, dO
 
+
 def retrieve_and_wipe_gradients(
-    Q: Tensor, K: Tensor, V: Tensor, O: Tensor, dO: Tensor,
+    Q: Tensor, K: Tensor, V: Tensor, out: Tensor, dO: Tensor,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """Retrieves and wipe the gradients from the queries, keys and values tensors."""
-    O.backward(dO)
+    out.backward(dO)
     dQ, Q.grad = Q.grad.clone(), None
     dK, K.grad = K.grad.clone(), None
     dV, V.grad = V.grad.clone(), None
     return dQ, dK, dV
 
+
 def generate_attention_mask(x: Tensor, verbose: bool = False) -> Tensor:
     """Generates a random attention mask for a tensor of shape [batch_size, seqlen, ...]"""
     attention_mask = torch.ones(size=x.shape[:2], dtype=bool, device=x.device)
     # If seqlen == 1, the attention mask is full of ones
-    if x.size(1) == 1: 
+    if x.size(1) == 1:
         return attention_mask
     # Otherwise, choose a random padding per batch
     padding_per_batch = torch.randint(low=0, high=x.size(1)-1, size=(x.size(0), )).tolist()
@@ -47,6 +54,7 @@ def generate_attention_mask(x: Tensor, verbose: bool = False) -> Tensor:
     if verbose:
         print("Paddings:", padding_per_batch)
     return attention_mask
+
 
 def start_and_end(x: Tensor, num_elem: int) -> str:
     """"Returns a string with the (num_elem) first and last elements of the given tensor (x)."""
@@ -67,12 +75,12 @@ def compare_results_fa(
     out_pt: Tensor,
     out_error_mul: int = 2,
     out_error_bias: float = 2e-5,
-    grad_error_mul: int = 3, # 2 or 3 
-    grad_error_bias: float = 1e-5, # 0 or 1e-5
+    grad_error_mul: int = 3,  # 2 or 3
+    grad_error_bias: float = 1e-5,  # 0 or 1e-5
 ) -> Tuple[Optional[Tensor], ...]:
-    """This code is a modified version of the one from the original FlashAttention repo: 
+    """This code is a modified version of the one from the original FlashAttention repo:
         https://github.com/Dao-AILab/flash-attention/blob/main/tests/test_flash_attn.py """
-    
+
     # Display output-related diffs
     print(f"Output max diff: {(out - out_ref).abs().max().item()}")
     print(f"Output mean diff: {(out - out_ref).abs().mean().item()}")
@@ -109,10 +117,10 @@ def compare_results_fa(
     # of a Pytorch implementation.
 
     # if dropout_p > 0.0:
-        # assert (attn - attn_ref).abs().max().item() <= 2 * (attn_pt - attn_ref).abs().max().item()
-        # With alibi, many of the prob values are 0.0 & -0.0 so dropout_fraction isn't accurate
-        # if not alibi:
-        #     assert abs(dropout_fraction - dropout_p) <= (0.01 if not local else 0.025)
+    # assert (attn - attn_ref).abs().max().item() <= 2 * (attn_pt - attn_ref).abs().max().item()
+    # With alibi, many of the prob values are 0.0 & -0.0 so dropout_fraction isn't accurate
+    # if not alibi:
+    #     assert abs(dropout_fraction - dropout_p) <= (0.01 if not local else 0.025)
 
     # Gradient of Q
     max_dq_error = (dq - dq_ref).abs().max().item()
@@ -135,9 +143,9 @@ def compare_results_fa(
 
 
 def compare_tensors(
-    reference: Tensor, 
-    ours: Tensor, 
-    rtol: float = 1, 
+    reference: Tensor,
+    ours: Tensor,
+    rtol: float = 1,
     atol: float = 1e-4,
     verbose: bool = False,
 ) -> None:
@@ -156,3 +164,44 @@ def compare_tensors(
             print("-"*30, "TESTED FAILED", "-"*30)
         else:
             raise ValueError(details)
+
+
+def generate_dropout_seed_and_mask(
+    dropout_p: float,
+    q: Tensor,
+    k: Tensor,
+    attention_mask: Optional[Tensor],
+) -> Tuple[Optional[int], Optional[Tensor]]:
+    if dropout_p == 0:
+        return None, None
+    dropout_seed = torch.randint(low=0, high=2**32, size=(1,)).item()
+    if attention_mask is None:
+        batch, seqlen_q, nheads_q, head_dim = q.shape
+        seqlen_k = k.size(1)
+    else:
+        batch, _, nheads_q, head_dim = q.shape
+        seqlen_q = attention_mask.float().sum().item()
+        seqlen_k = seqlen_q
+    dropout_mask = torch.zeros(size=(batch, nheads_q, seqlen_q, seqlen_k), device=q.device)
+    n_elements = dropout_mask.numel()
+    BLOCK_SIZE = 64
+    grid = lambda meta: (triton.cdiv(n_elements, BLOCK_SIZE), )
+    _generate_dropout_mask[grid](dropout_mask, dropout_seed, dropout_p, n_elements, BLOCK_SIZE)
+    return dropout_seed, dropout_mask.bool()
+
+
+@triton.jit
+def _generate_dropout_mask(
+    output_ptr,
+    dropout_seed,
+    dropout_p,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
+    I_start = tl.program_id(axis=0) * BLOCK_SIZE
+    offsets = I_start + tl.arange(0, BLOCK_SIZE)
+    # load data from x
+    mask = offsets < n_elements
+    # randomly prune it
+    dropout_mask = tl.rand(dropout_seed, offsets) > dropout_p
+    tl.store(output_ptr + offsets, dropout_mask, mask=mask)

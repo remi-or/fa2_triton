@@ -16,8 +16,11 @@ class FlashAttnFunc(torch.autograd.Function):
         k: Tensor,
         v: Tensor,
         attention_mask: Optional[Tensor] = None,
+        attention_bias: Optional[Tensor] = None,
+        dropout_p: float = 0.0,
         causal: bool = False,
         softmax_scale: Optional[Tensor] = None,
+        dropout_seed: Optional[int] = None,
     ):
         """
         Compute the forward pass of the FlashAttention function.
@@ -38,11 +41,21 @@ class FlashAttnFunc(torch.autograd.Function):
         q = q if q.stride(-1) == 1 else q.contiguous()
         k = k if k.stride(-1) == 1 else k.contiguous()
         v = v if v.stride(-1) == 1 else v.contiguous()
-        o, lse, ctx.softmax_scale = _flash_attn_forward(
-            q, k, v, attention_mask=attention_mask, causal=causal, softmax_scale=softmax_scale
+        attention_bias = None if (attention_bias is None) else attention_bias.contiguous()
+        o, lse, ctx.softmax_scale, ctx.dropout_seed = _flash_attn_forward(
+            q=q,
+            k=k,
+            v=v,
+            attention_mask=attention_mask,
+            bias=attention_bias,
+            dropout_p=dropout_p,
+            causal=causal,
+            softmax_scale=softmax_scale,
+            dropout_seed=dropout_seed,
         )
-        ctx.save_for_backward(q, k, v, attention_mask, o, lse)
+        ctx.save_for_backward(q, k, v, attention_bias, attention_mask, o, lse)
         ctx.causal = causal
+        ctx.dropout_p = dropout_p
         return o
 
     @staticmethod
@@ -55,27 +68,33 @@ class FlashAttnFunc(torch.autograd.Function):
         Return:
             three tensors, the gradients of q, k and v respectively (check forward for shape info)
         """
-        q, k, v, attention_mask, o, lse = ctx.saved_tensors
+        q, k, v, bias, attention_mask, o, lse = ctx.saved_tensors
         dq, dk, dv = _flash_attn_backward(
-            do, q, k, v, attention_mask, o, lse, causal=ctx.causal, softmax_scale=ctx.softmax_scale
+            dO=do,
+            q=q,
+            k=k,
+            v=v,
+            bias=bias,
+            attention_mask=attention_mask,
+            o=o,
+            lse=lse,
+            dropout_p=ctx.dropout_p,
+            causal=ctx.causal,
+            softmax_scale=ctx.softmax_scale,
+            dropout_seed=ctx.dropout_seed,
         )
-        return dq, dk, dv, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None
 
 
-flash_attn_func = FlashAttnFunc.apply
-
-
-class LogsumexpFunc(torch.autograd.Function):
-    """A function to retrieve the LogSumExp of the forward pass of FA2. Mainly for debug purposes."""
-
-    @staticmethod
-    def forward(ctx, q, k, v, attention_mask=None, bias=None, causal=False, softmax_scale=None):
-        # Make sure that the last dimension is contiguous
-        q, k, v = [x if x.stride(-1) == 1 else x.contiguous() for x in [q, k, v]]
-        o, lse, ctx.softmax_scale = _flash_attn_forward(
-            q, k, v, attention_mask=attention_mask, bias=bias, causal=causal, softmax_scale=softmax_scale
-        )
-        return lse
-
-
-lse_func = LogsumexpFunc.apply
+def flash_attn_func(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    attention_mask: Optional[Tensor] = None,
+    attention_bias: Optional[Tensor] = None,
+    dropout_p: float = 0.0,
+    causal: bool = False,
+    softmax_scale: Optional[Tensor] = None,
+    dropout_seed: Optional[int] = None,
+) -> Tensor:
+    return FlashAttnFunc.apply(q, k, v, attention_mask, attention_bias, dropout_p, causal, softmax_scale, dropout_seed)

@@ -8,22 +8,26 @@ from torch import Tensor
 
 from src.backward.compute_delta import _compute_delta
 from src.backward.kernel import _bwd_kernel
-from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic
+from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic, infer_bias_strides, handle_dropout
 
 
 def _flash_attn_backward(
-    dO: Tensor,  # [batch_size, seqlen_q, num_heads, head_dim]
-    q: Tensor,  # [batch_size, seqlen_q, num_heads, head_dim]
-    k: Tensor,  # [batch_size, seqlen_k, num_heads, head_dim]
-    v: Tensor,  # [batch_size, seqlen_k, num_heads, head_dim]
+    dO: Tensor,  # [batch_size, seqlen_q, nheads_q, head_dim]
+    q: Tensor,  # [batch_size, seqlen_q, nheads_q, head_dim]
+    k: Tensor,  # [batch_size, seqlen_k, nheads_kv, head_dim]
+    v: Tensor,  # [batch_size, seqlen_k, nheads_kv, head_dim]
+    bias: Optional[Tensor],  # [1 | batch_size, 1 | nheads_q, seqlen_q, seqlen_k]
     attention_mask: Optional[Tensor],  # [batch_size, seqlen_qk]
-    o: Tensor,  # [batch_size, seqlen_q, num_heads, head_dim]
-    lse: Tensor,  # [batch_size, num_heads, max_seqlen_q_rounded]
-    causal: bool = False,
-    softmax_scale: Optional[float] = None,
+    o: Tensor,  # [batch_size, seqlen_q, nheads_q, head_dim]
+    lse: Tensor,  # [batch_size, nheads_q, max_seqlen_q_rounded]
+    dropout_p: float,
+    causal: bool,
+    softmax_scale: Optional[float],
+    dropout_seed: Optional[int],
 ) -> Tuple[Tensor, Tensor, Tensor]:
 
     if attention_mask is not None:
+        assert bias is None, "Attention mask is not supported along with attention bias. Just use bias instead."
         assert q.size(1) == k.size(1), "Attention mask is not supported with seqlen_q != seqlen_k"
         varlen_mode = (attention_mask.size(0) > 1)
         useless_padding = attention_mask.size(1) - attention_mask.sum(-1).max().item()
@@ -40,12 +44,13 @@ def _flash_attn_backward(
 
     # Retrieve and check shapes
     dO = dO.contiguous() if dO.stride(-1) != 1 else dO
-    batch_size, seqlen_q, num_heads, head_dim = q.shape
-    seqlen_k = k.size(1)
+    batch_size, seqlen_q, nheads_q, head_dim = q.shape
+    _, seqlen_k, nheads_kv, _ = k.shape
     max_seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
     softmax_scale = 1.0 / math.sqrt(head_dim) if softmax_scale is None else softmax_scale
+    assert nheads_q % nheads_kv == 0, f"{nheads_q = } is not divisible by {nheads_kv =}"
     assert head_dim <= 128
-    assert lse.shape == (batch_size, num_heads, max_seqlen_q_rounded)
+    assert lse.shape == (batch_size, nheads_q, max_seqlen_q_rounded)
     assert q.stride(-1) == k.stride(-1) == v.stride(-1) == o.stride(-1) == 1
 
     # Depending on attention_mask, switch to varlen
@@ -74,16 +79,20 @@ def _flash_attn_backward(
         max_seqlen_q = seqlen_q
         max_seqlen_k = seqlen_k
 
+    # Handle bias and dropout
+    stride_bb, stride_bh, stride_bm = infer_bias_strides(bias, batch_size, nheads_q, seqlen_q, seqlen_k)
+    dropout_seed = handle_dropout(dropout_p, dropout_seed, is_forward=False)
+
     # Prepare gradient accumulators # TODO: maybe we can initialize this as empty -- check pre hook
-    dq = torch.zeros_like(q, dtype=torch.float32)  # [batch_size|1, seqlen_q|sum_seqlens_qk, num_heads, head_dim]
-    dk = torch.zeros_like(k)  # [batch_size|1, seqlen_q|sum_seqlens_q, num_heads, head_dim]
-    dv = torch.zeros_like(v)  # [batch_size|1, seqlen_q|sum_seqlens_k, num_heads, head_dim]
-    delta = torch.zeros_like(lse)  # [batch_size, num_heads, max_seqlen_q_rounded]
+    dq = torch.zeros_like(q, dtype=torch.float32)  # [batch_size|1, seqlen_q|sum_seqlens_qk, nheads_q, head_dim]
+    dk = torch.zeros(size=(k.size(0), k.size(1), q.size(2), k.size(3)), device=k.device, dtype=k.dtype)
+    dv = torch.zeros(size=(v.size(0), v.size(1), q.size(2), v.size(3)), device=v.device, dtype=v.dtype)
+    delta = torch.zeros_like(lse)  # [batch_size, nheads_q, max_seqlen_q_rounded]
 
     # Infer problem size
     BLOCK_HEADDIM = max(triton.next_power_of_2(head_dim), 16)
     # Launch the delta computation kernel
-    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch_size * num_heads)  # noqa: E731
+    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch_size * nheads_q)  # noqa: E731
     _compute_delta[grid](
         o,
         dO,
@@ -94,7 +103,7 @@ def _flash_attn_backward(
         dO.stride(0),
         dO.stride(2),
         dO.stride(1),
-        num_heads,
+        nheads_q,
         seqlen_q,
         max_seqlen_q_rounded,
         cum_seqlens_q,
@@ -105,14 +114,16 @@ def _flash_attn_backward(
     )
 
     # Launch backward kernel
+    head_ratio = nheads_q // nheads_kv
     grid = lambda META: (  # noqa: E731
         triton.cdiv(seqlen_k, META["BLOCK_N1"]) + triton.cdiv(seqlen_q, META["BLOCK_M2"]),
-        batch_size * num_heads,
+        batch_size * nheads_q,
     )
     _bwd_kernel[grid](
         q,
         k,
         v,
+        bias,
         dO,
         dq,
         dk,
@@ -120,14 +131,18 @@ def _flash_attn_backward(
         lse,
         delta,
         softmax_scale,
+        dropout_p,
+        dropout_seed,
         q.stride(0), q.stride(2), q.stride(1),
         k.stride(0), k.stride(2), k.stride(1),
         v.stride(0), v.stride(2), v.stride(1),
+        stride_bb, stride_bh, stride_bm,
         dO.stride(0), dO.stride(2), dO.stride(1),
         dq.stride(0), dq.stride(2), dq.stride(1),
         dk.stride(0), dk.stride(2), dk.stride(1),
         dv.stride(0), dv.stride(2), dv.stride(1),
-        num_heads,
+        nheads_q,
+        head_ratio,
         seqlen_q,
         cum_seqlens_q,
         seqlen_k,
@@ -138,8 +153,15 @@ def _flash_attn_backward(
         max_seqlen_k // 32,  # key for triton cache (limit number of compilations)
         VARLEN=varlen_mode,
         IS_CAUSAL=causal,
+        BIAS_ON=(bias is not None),
+        USE_DROPOUT=(dropout_p > 0),
         BLOCK_HEADDIM=BLOCK_HEADDIM,
     )
+
+    # GQA reduction
+    if head_ratio > 1:
+        dk = dk.unflatten(dim=2, sizes=(nheads_kv, head_ratio)).sum(-2)
+        dv = dv.unflatten(dim=2, sizes=(nheads_kv, head_ratio)).sum(-2)
 
     # In case of variable length mode, we need to unpack the gradients
     if varlen_mode:
