@@ -15,12 +15,13 @@ def generate_test_data(
     head_dim: int,
     dtype: torch.dtype,
     seed: int = 0,
+    device: str = "cuda",
 ) -> Tuple[Tensor, ...]:
     """Generate the data necessary for a test of the FlashAttention2 algorithm: Q, K, V and dO."""
     torch.manual_seed(seed)
-    Q = (torch.empty((batch_size, seqlen_q, nheads_q, head_dim), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
-    K = (torch.empty((batch_size, seqlen_k, nheads_kv, head_dim), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
-    V = (torch.empty((batch_size, seqlen_k, nheads_kv, head_dim), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
+    Q = (torch.empty((batch_size, seqlen_q, nheads_q, head_dim), dtype=dtype, device=device).normal_(mean=0.0, std=0.5).requires_grad_())
+    K = (torch.empty((batch_size, seqlen_k, nheads_kv, head_dim), dtype=dtype, device=device).normal_(mean=0.0, std=0.5).requires_grad_())
+    V = (torch.empty((batch_size, seqlen_k, nheads_kv, head_dim), dtype=dtype, device=device).normal_(mean=0.0, std=0.5).requires_grad_())
     dO = torch.randn_like(Q)
     return Q, K, V, dO
 
@@ -181,7 +182,7 @@ def generate_dropout_seed_and_mask(
         batch, _, nheads_q, head_dim = q.shape
         seqlen_q = attention_mask.float().sum().item()
         seqlen_k = seqlen_q
-    dropout_mask = torch.zeros(size=(batch, nheads_q, seqlen_q, seqlen_k)).to("cuda")
+    dropout_mask = torch.zeros(size=(batch, nheads_q, seqlen_q, seqlen_k), device=q.device)
     n_elements = dropout_mask.numel()
     BLOCK_SIZE = 64
     grid = lambda meta: (triton.cdiv(n_elements, BLOCK_SIZE), )

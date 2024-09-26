@@ -65,6 +65,8 @@ def _bwd_kernel(
     LSE,
     D,
     softmax_scale,
+    dropout_p,
+    dropout_seed,
     stride_qb, stride_qh, stride_qm,
     stride_kb, stride_kh, stride_kn,
     stride_vb, stride_vh, stride_vn,
@@ -86,6 +88,7 @@ def _bwd_kernel(
     VARLEN: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BIAS_ON: tl.constexpr,
+    USE_DROPOUT: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
     BLOCK_M1: tl.constexpr,
     BLOCK_N1: tl.constexpr,
@@ -128,6 +131,10 @@ def _bwd_kernel(
     DV += off_batch * stride_dvb + off_head_q * stride_dvh + cu_seq_start_k * stride_dvn
     if BIAS_ON:
         Bias += off_batch * stride_bb + off_head_q * stride_bh + cu_seq_start_q * stride_bm
+    if USE_DROPOUT:
+        Dropout = actual_seqlen_k * (cu_seq_start_q + actual_seqlen_q * (off_head_q + nheads_q * off_batch))
+    else:
+        Dropout = None
 
     # Offset vector pointers for batch and head
     D += off_head_and_batch * seqlen_q_rounded
@@ -139,11 +146,11 @@ def _bwd_kernel(
         pad_cols = (not EVEN_N1) or (VARLEN and ((i_start_n + 1) * BLOCK_N1 > actual_seqlen_k))
         _compute_column_blocks_dkdv(
             i_start_n * BLOCK_N1,
-            Q, K, V, Bias, DO, DK, DV, LSE, D,
-            softmax_scale,
+            Q, K, V, Bias, Dropout, DO, DK, DV, LSE, D,
+            softmax_scale, dropout_p, dropout_seed,
             stride_qm, stride_kn, stride_vn, stride_bm, stride_dom, stride_dkn, stride_dvn,
             actual_seqlen_q, actual_seqlen_k, headdim,
-            IS_CAUSAL=IS_CAUSAL, BIAS_ON=BIAS_ON,
+            IS_CAUSAL=IS_CAUSAL, BIAS_ON=BIAS_ON, USE_DROPOUT=USE_DROPOUT,
             PAD_COLS=pad_cols, HEADS_PADDED=HEADS_PADDED,
             BLOCK_M=BLOCK_M1, BLOCK_N=BLOCK_N1, BLOCK_HEADDIM=BLOCK_HEADDIM,
         )
@@ -154,11 +161,11 @@ def _bwd_kernel(
         pad_rows = (not EVEN_M2) or (VARLEN and ((i_start_m + 1) * BLOCK_M2 > actual_seqlen_q))
         _compute_row_blocks_dq(
             i_start_m * BLOCK_M2,
-            Q, K, V, Bias, DO, DQ, LSE, D,
-            softmax_scale,
+            Q, K, V, Bias, Dropout, DO, DQ, LSE, D,
+            softmax_scale, dropout_p, dropout_seed,
             stride_qm, stride_kn, stride_vn, stride_bm, stride_dom, stride_dqm,
             actual_seqlen_q, actual_seqlen_k, headdim,
-            VARLEN=VARLEN, IS_CAUSAL=IS_CAUSAL, BIAS_ON=BIAS_ON,
+            VARLEN=VARLEN, IS_CAUSAL=IS_CAUSAL, BIAS_ON=BIAS_ON, USE_DROPOUT=USE_DROPOUT,
             PAD_ROWS=pad_rows, HEADS_PADDED=HEADS_PADDED,
             BLOCK_M=BLOCK_M2, BLOCK_N=BLOCK_N2, BLOCK_HEADDIM=BLOCK_HEADDIM,
             EVEN_N=EVEN_N2,

@@ -18,8 +18,11 @@ def _compute_single_block_dkdv(
     offs_d,
     q_ptrs,
     bias_ptrs,
+    dropout_offs,
     do_ptrs,
     softmax_scale,
+    dropout_p,
+    dropout_seed,
     stride_qm,
     stride_bm,
     stride_dom,
@@ -30,6 +33,7 @@ def _compute_single_block_dkdv(
     MASKED: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BIAS_ON: tl.constexpr,
+    USE_DROPOUT: tl.constexpr,
     PAD_ROWS: tl.constexpr,
     PAD_COLS: tl.constexpr,
     HEADS_PADDED: tl.constexpr,
@@ -39,6 +43,8 @@ def _compute_single_block_dkdv(
     do_ptrs = do_ptrs + I_start_m * stride_dom
     if BIAS_ON:
         bias_ptrs = bias_ptrs + I_start_m * stride_bm
+    if USE_DROPOUT:
+        dropout_offs += I_start_m * actual_seqlen_k
 
     # Update row variables
     offs_m_curr = I_start_m + offs_m
@@ -80,7 +86,6 @@ def _compute_single_block_dkdv(
             qk = tl.where(offs_m_curr[:, None] >= offs_n_causal[None, :], qk, float("-inf"))
     tl.debug_barrier()
 
-    # Load the LogSumExp and retrieve P
     p = tl.exp2(qk * (softmax_scale * 1.44269504089) - lse_i[:, None])
 
     # Account for fully masked lines
@@ -114,12 +119,15 @@ def _compute_column_blocks_dkdv(
     K,
     V,
     Bias,
+    Dropout,
     DO,
     DK,
     DV,
     LSE,
     D,
     softmax_scale,
+    dropout_p,
+    dropout_seed,
     stride_qm,
     stride_kn,
     stride_vn,
@@ -132,6 +140,7 @@ def _compute_column_blocks_dkdv(
     headdim,
     IS_CAUSAL: tl.constexpr,
     BIAS_ON: tl.constexpr,
+    USE_DROPOUT: tl.constexpr,
     PAD_COLS: tl.constexpr,
     HEADS_PADDED: tl.constexpr,
     BLOCK_M: tl.constexpr,
@@ -153,17 +162,23 @@ def _compute_column_blocks_dkdv(
     offs_m = tl.arange(0, BLOCK_M)
     offs_d = tl.arange(0, BLOCK_HEADDIM)
 
-    # Initialize value-related pointer (not stats-related)
+    # Initialize states pointer
     q_ptrs = Q + (offs_m[:, None] * stride_qm + offs_d[None, :])
     k_ptrs = K + (offs_n[:, None] * stride_kn + offs_d[None, :])
     v_ptrs = V + (offs_n[:, None] * stride_vn + offs_d[None, :])
     dk_ptrs = DK + (offs_n[:, None] * stride_dkn + offs_d[None, :])
     dv_ptrs = DV + (offs_n[:, None] * stride_dvn + offs_d[None, :])
     do_ptrs = DO + (offs_m[:, None] * stride_dom + offs_d[None, :])
+    # ...and maybe bias
     if BIAS_ON:
         bias_ptrs = Bias + (offs_m[:, None] * stride_bm + offs_n[None, :])
     else:
         bias_ptrs = None
+    # ...and maybe dropout
+    if USE_DROPOUT:
+        dropout_offs = Dropout + offs_m[:, None] * actual_seqlen_k + offs_n[None, :]
+    else:
+        dropout_offs = None
 
     # Initialize dv and dk
     dk = tl.zeros([BLOCK_N, BLOCK_HEADDIM], dtype=tl.float32)
@@ -205,8 +220,11 @@ def _compute_column_blocks_dkdv(
                 offs_d,
                 q_ptrs,
                 bias_ptrs,
+                dropout_offs,
                 do_ptrs,
                 softmax_scale,
+                dropout_p,
+                dropout_seed,
                 stride_qm,
                 stride_bm,
                 stride_dom,
@@ -217,6 +235,7 @@ def _compute_column_blocks_dkdv(
                 MASKED=True,
                 IS_CAUSAL=IS_CAUSAL,
                 BIAS_ON=BIAS_ON,
+                USE_DROPOUT=USE_DROPOUT,
                 PAD_ROWS=True,  # TODO: fix this
                 PAD_COLS=PAD_COLS,
                 HEADS_PADDED=HEADS_PADDED,
@@ -239,8 +258,11 @@ def _compute_column_blocks_dkdv(
                 offs_d,
                 q_ptrs,
                 bias_ptrs,
+                dropout_offs,
                 do_ptrs,
                 softmax_scale,
+                dropout_p,
+                dropout_seed,
                 stride_qm,
                 stride_bm,
                 stride_dom,
@@ -251,6 +273,7 @@ def _compute_column_blocks_dkdv(
                 MASKED=False,
                 IS_CAUSAL=IS_CAUSAL,
                 BIAS_ON=BIAS_ON,
+                USE_DROPOUT=USE_DROPOUT,
                 PAD_ROWS=True,  # TODO: fix this
                 PAD_COLS=PAD_COLS,
                 HEADS_PADDED=HEADS_PADDED,

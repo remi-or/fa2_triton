@@ -18,7 +18,10 @@ def _compute_single_block_dq(
     k_ptrs,
     v_ptrs,
     bias_ptrs,
+    dropout_offs,
     softmax_scale,
+    dropout_p,
+    dropout_seed,
     stride_kn,
     stride_vn,
     actual_seqlen_q,
@@ -27,6 +30,7 @@ def _compute_single_block_dq(
     MASKED: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BIAS_ON: tl.constexpr,
+    USE_DROPOUT: tl.constexpr,
     PAD_COLS: tl.constexpr,
     HEADS_PADDED: tl.constexpr,
 ):
@@ -36,6 +40,8 @@ def _compute_single_block_dq(
     offs_n_curr = I_start_n + offs_n
     if BIAS_ON:
         bias_ptrs += I_start_n
+    if USE_DROPOUT:
+        dropout_offs += I_start_n
 
     # Load K, V and LSE now to reduce pipeline stall
     k = load_fn(k_ptrs, offs_n_curr, offs_d, PAD_COLS, HEADS_PADDED, actual_seqlen_k, headdim)
@@ -61,15 +67,9 @@ def _compute_single_block_dq(
             qk = tl.where(offs_m[:, None] >= offs_n_causal[None, :], qk, float("-inf"))
     tl.debug_barrier()
 
-    # Load the LogSumExp and retrieve P
     p = tl.exp2(qk * (softmax_scale * 1.44269504089) - lse_i[:, None])
-
-    # Compute auxiliary gradients
     dp = tl.dot(do, tl.trans(v))
 
-    # compute ds = p * (dp - delta[:, None])
-    # Putting the subtraction after the dp matmul (instead of before) is slightly faster
-    # Converting ds to q.dtype here reduces register pressure and makes it much faster for BLOCK_HEADDIM=128
     ds = (p * (dp - delta_i[:, None]) * softmax_scale).to(q.dtype)
 
     # compute dq
@@ -85,11 +85,14 @@ def _compute_row_blocks_dq(
     K,
     V,
     Bias,
+    Dropout,
     DO,
     DQ,
     LSE,
     D,
     softmax_scale,
+    dropout_p,
+    dropout_seed,
     stride_qm,
     stride_kn,
     stride_vn,
@@ -102,6 +105,7 @@ def _compute_row_blocks_dq(
     VARLEN: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BIAS_ON: tl.constexpr,
+    USE_DROPOUT: tl.constexpr,
     PAD_ROWS: tl.constexpr,
     HEADS_PADDED: tl.constexpr,
     BLOCK_M: tl.constexpr,
@@ -138,6 +142,10 @@ def _compute_row_blocks_dq(
         bias_ptrs = Bias + (offs_m[:, None] * stride_bm + offs_n[None, :])
     else:
         bias_ptrs = None
+    if USE_DROPOUT:
+        dropout_offs = Dropout + (offs_m[:, None] * stride_bm + offs_n[None, :])
+    else:
+        dropout_offs = None
 
     # Initialize the dq accumulator
     dq = tl.zeros([BLOCK_M, BLOCK_HEADDIM], dtype=tl.float32)
@@ -185,7 +193,10 @@ def _compute_row_blocks_dq(
                 k_ptrs,
                 v_ptrs,
                 bias_ptrs,
+                dropout_offs,
                 softmax_scale,
+                dropout_p,
+                dropout_seed,
                 stride_kn,
                 stride_vn,
                 actual_seqlen_q,
@@ -193,6 +204,7 @@ def _compute_row_blocks_dq(
                 headdim,
                 IS_CAUSAL=IS_CAUSAL,
                 BIAS_ON=BIAS_ON,
+                USE_DROPOUT=USE_DROPOUT,
                 MASKED=False,
                 PAD_COLS=False,
                 HEADS_PADDED=HEADS_PADDED,
@@ -215,7 +227,10 @@ def _compute_row_blocks_dq(
                 k_ptrs,
                 v_ptrs,
                 bias_ptrs,
+                dropout_offs,
                 softmax_scale,
+                dropout_p,
+                dropout_seed,
                 stride_kn,
                 stride_vn,
                 actual_seqlen_q,
@@ -223,6 +238,7 @@ def _compute_row_blocks_dq(
                 headdim,
                 IS_CAUSAL=IS_CAUSAL,
                 BIAS_ON=BIAS_ON,
+                USE_DROPOUT=USE_DROPOUT,
                 MASKED=True,
                 PAD_COLS=pad_cols,
                 HEADS_PADDED=HEADS_PADDED,

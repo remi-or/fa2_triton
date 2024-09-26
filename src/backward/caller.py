@@ -8,7 +8,7 @@ from torch import Tensor
 
 from src.backward.compute_delta import _compute_delta
 from src.backward.kernel import _bwd_kernel
-from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic, infer_bias_strides
+from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic, infer_bias_strides, handle_dropout
 
 
 def _flash_attn_backward(
@@ -20,8 +20,10 @@ def _flash_attn_backward(
     attention_mask: Optional[Tensor],  # [batch_size, seqlen_qk]
     o: Tensor,  # [batch_size, seqlen_q, nheads_q, head_dim]
     lse: Tensor,  # [batch_size, nheads_q, max_seqlen_q_rounded]
-    causal: bool = False,
-    softmax_scale: Optional[float] = None,
+    dropout_p: float,
+    causal: bool,
+    softmax_scale: Optional[float],
+    dropout_seed: Optional[int],
 ) -> Tuple[Tensor, Tensor, Tensor]:
 
     if attention_mask is not None:
@@ -77,8 +79,9 @@ def _flash_attn_backward(
         max_seqlen_q = seqlen_q
         max_seqlen_k = seqlen_k
 
-    # Infer the bias stride
+    # Handle bias and dropout
     stride_bb, stride_bh, stride_bm = infer_bias_strides(bias, batch_size, nheads_q, seqlen_q, seqlen_k)
+    dropout_seed = handle_dropout(dropout_p, dropout_seed, is_forward=False)
 
     # Prepare gradient accumulators # TODO: maybe we can initialize this as empty -- check pre hook
     dq = torch.zeros_like(q, dtype=torch.float32)  # [batch_size|1, seqlen_q|sum_seqlens_qk, nheads_q, head_dim]
@@ -128,6 +131,8 @@ def _flash_attn_backward(
         lse,
         delta,
         softmax_scale,
+        dropout_p,
+        dropout_seed,
         q.stride(0), q.stride(2), q.stride(1),
         k.stride(0), k.stride(2), k.stride(1),
         v.stride(0), v.stride(2), v.stride(1),
@@ -149,6 +154,7 @@ def _flash_attn_backward(
         VARLEN=varlen_mode,
         IS_CAUSAL=causal,
         BIAS_ON=(bias is not None),
+        USE_DROPOUT=(dropout_p > 0),
         BLOCK_HEADDIM=BLOCK_HEADDIM,
     )
 

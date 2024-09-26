@@ -19,7 +19,7 @@ def _flash_attn_forward(
     causal: bool = False,
     softmax_scale: Optional[float] = None,
     dropout_seed: Optional[int] = None,
-) -> Tuple[Tensor, Tensor, float]:
+) -> Tuple[Tensor, Tensor, float, int]:
 
     # Currently, variable length (varlen) mode is mutually exclusive with attention masking (TODO)
     if attention_mask is not None:
@@ -65,7 +65,7 @@ def _flash_attn_forward(
 
     # Account for bias and dropout
     stride_bb, stride_bh, stride_bm = infer_bias_strides(bias, batch, nheads_q, seqlen_q, seqlen_k)
-    dropout_seed = handle_dropout(dropout_p, dropout_seed)
+    dropout_seed = handle_dropout(dropout_p, dropout_seed, is_forward=True)
 
     # Setup output accumulator
     o = torch.zeros_like(q)

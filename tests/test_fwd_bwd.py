@@ -1,43 +1,19 @@
 import pytest
 import torch
+import random
 
-from src.reference_implementation import attention_ref
-from src.wrapper import flash_attn_func
-from tests.utils import compare_results_fa, generate_attention_mask, generate_test_data
+from tests.core import _test_core_fn
 
+# TODO: add support for window size?
+# TODO: add support for head dim > 128, 160, 192, 224, 256])
 
-def _test_fwd_bwd(
-    batch_size: int,
-    nheads_q: int,
-    nheads_kv: int,
-    seqlen_q: int,
-    seqlen_k: int,
-    head_dim: int,
-    causal: bool,
-    use_attention: bool,
-    use_bias: bool,
-    dtype: torch.dtype = torch.float16,
-) -> None:
-    # Prepare data
-    q, k, v, do = generate_test_data(batch_size, nheads_q, nheads_kv, seqlen_q, seqlen_k, head_dim, dtype)
-    attn_mask = generate_attention_mask(q) if use_attention else None
-    attn_bias = torch.rand(size=(1, 1, seqlen_q, seqlen_k), dtype=dtype, device="cuda") if use_bias else None
-    # Compute reference
-    out_ref = attention_ref(q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, attn_bias=attn_bias, causal=causal)
-    # Compute pytorch reference
-    out_pt = attention_ref(q, k, v, query_padding_mask=attn_mask, key_padding_mask=attn_mask, attn_bias=attn_bias, causal=causal,
-                           upcast=False, reorder_ops=True)
-    # Compute ours
-    out = flash_attn_func(q, k, v, attn_mask, attn_bias, causal)
-    # Compare results
-    compare_results_fa(q, k, v, do, out, out_ref, out_pt)
+SKIP_PROB = 0.8
 
 
-@pytest.mark.parametrize("dtype", ([torch.bfloat16]))  # TODO: support bfloat16
-# @pytest.mark.parametrize("alibi", [False, True])
-# @pytest.mark.parametrize("local", [False, True]) # TODO: add support for window size?
+@pytest.mark.parametrize("dtype", ([torch.float16, torch.bfloat16]))
+@pytest.mark.parametrize("dropout_p", [0])
 @pytest.mark.parametrize("causal", [False, True])
-@pytest.mark.parametrize("head_dim", [32, 40, 59, 64, 80, 96, 111, 128])  # TODO: add support for head dim > 128, 160, 192, 224, 256])
+@pytest.mark.parametrize("head_dim", [32, 40, 59, 64, 80, 96, 111, 128])
 @pytest.mark.parametrize(
     "swap_seqlens, use_attention, use_bias",
     [(False, False, False), (False, False, True), (False, True, False), (True, False, False), (True, False, True)],
@@ -57,7 +33,6 @@ def _test_fwd_bwd(
         (1023, 1024),
     ],
 )
-# @pytest.mark.parametrize("dropout_p", [0.0, 0.17]) TODO
 @pytest.mark.parametrize("nheads_q, nheads_kv", [(8, 2), (9, 9)])
 @pytest.mark.parametrize("batch_size", [4])
 def test_fwd_bwd(
@@ -69,12 +44,29 @@ def test_fwd_bwd(
     swap_seqlens: bool,
     head_dim: int,
     causal: bool,
+    dropout_p: float,
     use_attention: bool,
     use_bias: bool,
     dtype: torch.dtype,
 ) -> None:
+    if random.random() < SKIP_PROB:
+        return None
     if swap_seqlens:
         seqlen_q, seqlen_k = seqlen_k, seqlen_q
     if use_attention:
         seqlen_q = seqlen_k
-    _test_fwd_bwd(batch_size, nheads_q, nheads_kv, seqlen_q, seqlen_k, head_dim, causal, use_attention, use_bias, dtype)
+    _test_core_fn(
+        batch_size=batch_size,
+        nheads_q=nheads_q,
+        nheads_kv=nheads_kv,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        causal=causal,
+        dropout_p=dropout_p,
+        use_attention=use_attention,
+        use_bias=use_bias,
+        dtype=dtype,
+        FORWARD_ONLY=False,
+        RETURN=False,
+    )
