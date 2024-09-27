@@ -39,7 +39,16 @@ def early_config_prune_bwd_kernel(
         Config({"BLOCK_M1": 64, "BLOCK_N1": 64, "BLOCK_M2": 64, "BLOCK_N2": 64}, num_warps=4, num_stages=0),
         Config({"BLOCK_M1": 64, "BLOCK_N1": 128, "BLOCK_M2": 128, "BLOCK_N2": 64}, num_warps=4, num_stages=0),
     ],
-    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"],  # TODO: add dtype
+    key=[
+        "CACHE_KEY_SEQLEN_Q",
+        "CACHE_KEY_SEQLEN_K",
+        "DTYPE",
+        "VARLEN",
+        "USE_DROPOUT",
+        "IS_CAUSAL",
+        "BIAS_ON",
+        "BLOCK_HEADDIM",
+    ],
     prune_configs_by={"early_config_prune": early_config_prune_bwd_kernel},
 )
 @triton.heuristics(
@@ -85,6 +94,7 @@ def _bwd_kernel(
     headdim,
     CACHE_KEY_SEQLEN_Q,
     CACHE_KEY_SEQLEN_K,
+    DTYPE,
     VARLEN: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BIAS_ON: tl.constexpr,

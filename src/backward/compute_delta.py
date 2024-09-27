@@ -12,7 +12,7 @@ MIN_B = 16
         Config({"BLOCK_M": 64}, num_warps=4, num_stages=0),
         Config({"BLOCK_M": 128}, num_warps=4, num_stages=0),
     ],
-    key=["CACHE_KEY_SEQLEN_Q"],  # TODO: add dtype
+    key=["CACHE_KEY_SEQLEN_Q", "DTYPE"],  # TODO: add dtype
 )
 @triton.jit
 def _compute_delta(
@@ -31,6 +31,7 @@ def _compute_delta(
     cum_seqlens_q,
     headdim,
     CACHE_KEY_SEQLEN_Q,
+    DTYPE,
     VARLEN: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,

@@ -8,7 +8,7 @@ from torch import Tensor
 
 from src.backward.compute_delta import _compute_delta
 from src.backward.kernel import _bwd_kernel
-from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic, infer_bias_strides, handle_dropout
+from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic, infer_bias_strides, handle_dropout, encode_dtype
 
 
 def _flash_attn_backward(
@@ -49,7 +49,6 @@ def _flash_attn_backward(
     max_seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
     softmax_scale = 1.0 / math.sqrt(head_dim) if softmax_scale is None else softmax_scale
     assert nheads_q % nheads_kv == 0, f"{nheads_q = } is not divisible by {nheads_kv =}"
-    assert head_dim <= 128
     assert lse.shape == (batch_size, nheads_q, max_seqlen_q_rounded)
     assert q.stride(-1) == k.stride(-1) == v.stride(-1) == o.stride(-1) == 1
 
@@ -109,6 +108,7 @@ def _flash_attn_backward(
         cum_seqlens_q,
         head_dim,
         max_seqlen_q // 32,
+        encode_dtype(o),
         VARLEN=varlen_mode,
         BLOCK_HEADDIM=BLOCK_HEADDIM,
     )
@@ -151,6 +151,7 @@ def _flash_attn_backward(
         head_dim,
         max_seqlen_q // 32,
         max_seqlen_k // 32,  # key for triton cache (limit number of compilations)
+        encode_dtype(q),
         VARLEN=varlen_mode,
         IS_CAUSAL=causal,
         BIAS_ON=(bias is not None),

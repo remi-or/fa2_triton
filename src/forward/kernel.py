@@ -39,7 +39,16 @@ def early_config_prune_fwd_kernel(
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=4, num_stages=1),
         triton.Config({"BLOCK_M": 256, "BLOCK_N": 256}, num_warps=4, num_stages=1),
     ],
-    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"],
+    key=[
+        "CACHE_KEY_SEQLEN_Q",
+        "CACHE_KEY_SEQLEN_K",
+        "DTYPE",
+        "VARLEN",
+        "USE_DROPOUT",
+        "IS_CAUSAL",
+        "BIAS_ON",
+        "BLOCK_HEADDIM",
+    ],
     prune_configs_by={"early_config_prune": early_config_prune_fwd_kernel},
 )
 @triton.heuristics(
@@ -73,6 +82,7 @@ def _fwd_kernel(
     headdim,
     CACHE_KEY_SEQLEN_Q,
     CACHE_KEY_SEQLEN_K,
+    DTYPE,
     VARLEN: tl.constexpr,
     USE_DROPOUT: tl.constexpr,
     IS_CAUSAL: tl.constexpr,

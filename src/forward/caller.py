@@ -6,7 +6,7 @@ import triton
 from torch import Tensor
 
 from src.forward.kernel import _fwd_kernel
-from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic, infer_bias_strides, handle_dropout
+from src.utils import attention_pack, attention_unpack, torch_ignore_deterministic, infer_bias_strides, handle_dropout, encode_dtype
 
 
 def _flash_attn_forward(
@@ -36,7 +36,6 @@ def _flash_attn_forward(
     assert nheads_q % nheads_kv == 0, f"{nheads_q = } is not divisible by {nheads_kv =}"
     assert k.shape == expected_kv_shape, f"{k.shape = } <> {expected_kv_shape = }"
     assert v.shape == expected_kv_shape, f"{v.shape = } <> {expected_kv_shape = }"
-    assert head_dim <= 128, f"FlashAttention only support head dimensions up to 128, got {head_dim = }"
     assert q.dtype == k.dtype == v.dtype, "All tensors must have the same type"
     assert q.dtype in [torch.float16, torch.bfloat16], "Only support fp16 and bf16"
     assert q.is_cuda and k.is_cuda and v.is_cuda
@@ -105,6 +104,7 @@ def _flash_attn_forward(
         head_dim,
         max_seqlen_q // 128,
         max_seqlen_k // 128,  # key for triton cache (limit number of compilations)
+        encode_dtype(q),
         # Can't use kwargs here because triton autotune expects key to be args, not kwargs
         # VARLEN=varlen_mode, IS_CAUSAL=causal, BLOCK_HEADDIM=d,
         VARLEN=varlen_mode,
