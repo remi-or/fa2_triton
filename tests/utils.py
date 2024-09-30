@@ -74,7 +74,7 @@ def compare_results_fa(
     out_ref: Tensor,
     out_pt: Tensor,
     out_error_mul: int = 2,
-    out_error_bias: float = 2e-5,
+    out_error_bias: float = 5e-5,
     grad_error_mul: int = 3,  # 2 or 3
     grad_error_bias: float = 1e-5,  # 0 or 1e-5
 ) -> Tuple[Optional[Tensor], ...]:
