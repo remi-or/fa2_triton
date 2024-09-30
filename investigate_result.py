@@ -8,16 +8,20 @@ from tests.core import _test_core_fn
 
 PLOT_HEAD_INDEX = None
 
-batch_size = 1
-num_heads = 1
+batch_size = 4
+nheads_q = 8
+nheads_kv = 8
 
-seqlen_q = 32
-seqlen_k = 32
-swap_seqlens = False
+seqlen_q = 1
+seqlen_k = 239
+swap_seqlens = True
 use_attention = False
+use_bias = False
 
-head_dim = 32
+head_dim = 64
 causal = False
+dropout_p = 0
+
 dtype = torch.float16
 
 forward_only = False
@@ -33,15 +37,15 @@ if __name__ == "__main__":
 
     q, k, v, out, out_pt, out_ref, do = _test_core_fn(
         batch_size=batch_size,
-        nheads_q=num_heads,
-        nheads_kv=num_heads,
+        nheads_q=nheads_q,
+        nheads_kv=nheads_kv,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         causal=causal,
-        dropout_p=0.99,
+        dropout_p=dropout_p,
         use_attention=use_attention,
-        use_bias=False,
+        use_bias=use_bias,
         dtype=dtype,
         FORWARD_ONLY=True,
         RETURN=True,

@@ -2,7 +2,7 @@ import torch
 from torch import Tensor
 from typing import Optional, Tuple
 
-from src.reference_implementation import attention_ref
+from src.reference_implementation import flash_attn_reference
 from src.wrapper import flash_attn_func
 from tests.utils import compare_results_fa, generate_attention_mask, generate_test_data, generate_dropout_seed_and_mask
 
@@ -28,7 +28,7 @@ def _test_core_fn(
     attn_bias = torch.rand(size=(1, 1, seqlen_q, seqlen_k), dtype=dtype, device=q.device) if use_bias else None
     dropout_seed, dropout_mask = generate_dropout_seed_and_mask(dropout_p, q, k, attn_mask)
     # Compute reference
-    out_ref = attention_ref(
+    out_ref = flash_attn_reference(
         q=q,
         k=k,
         v=v,
@@ -40,7 +40,7 @@ def _test_core_fn(
         causal=causal,
     )
     # Compute pytorch reference
-    out_pt = attention_ref(
+    out_pt = flash_attn_reference(
         q=q,
         k=k,
         v=v,
@@ -67,8 +67,12 @@ def _test_core_fn(
     )
     # Compare results
     grad = None if FORWARD_ONLY else do
-    compare_results_fa(q, k, v, grad, out, out_ref, out_pt)
-    if not RETURN:
-        return None
-    else:
+    if RETURN:
+        try:
+            compare_results_fa(q, k, v, grad, out, out_ref, out_pt)
+        except AssertionError as ae:
+            print(ae)
         return q, k, v, out, out_pt, out_ref, do
+    else:
+        compare_results_fa(q, k, v, grad, out, out_ref, out_pt)
+        return None

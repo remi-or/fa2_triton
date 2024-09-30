@@ -7,13 +7,13 @@ from tests.core import _test_core_fn
 # TODO: add support for window size?
 # TODO: add support for head dim > 128, 160, 192, 224, 256])
 
-SKIP_PROB = 0.8
+SKIP_PROB = 0.0
 
 
 @pytest.mark.parametrize("dtype", ([torch.float16, torch.bfloat16]))
 @pytest.mark.parametrize("dropout_p", [0])
 @pytest.mark.parametrize("causal", [False, True])
-@pytest.mark.parametrize("head_dim", [32, 40, 59, 64, 80, 96, 111, 128])
+@pytest.mark.parametrize("head_dim", [32, 40, 64, 111, 128, 207, 256])
 @pytest.mark.parametrize(
     "swap_seqlens, use_attention, use_bias",
     [(False, False, False), (False, False, True), (False, True, False), (True, False, False), (True, False, True)],

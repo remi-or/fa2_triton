@@ -4,7 +4,7 @@ import torch
 from torch import Tensor
 import triton
 
-from src.reference_implementation import attention_ref
+from src.reference_implementation import flash_attn_reference
 from src.wrapper import flash_attn_func
 from tests.utils import generate_attention_mask, generate_test_data
 
@@ -76,7 +76,7 @@ class FA2TestCaller:
         elif self.kernel == "Flex":
             out = _flex_attention_compiled(self.q, self.k, self.v, block_mask=self.block_mask)
         elif self.kernel == "Pytorch":
-            out = attention_ref(self.q, self.k, self.v, self.attn_mask, self.attn_mask, causal=self.causal)
+            out = flash_attn_reference(self.q, self.k, self.v, self.attn_mask, self.attn_mask, causal=self.causal)
         else:
             raise KeyError(f"Unknown self.kernel: {self.kernel}")
         # Maybe backward pass

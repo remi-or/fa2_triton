@@ -97,3 +97,13 @@ class torch_ignore_deterministic:
         if exc_type:
             raise exc_val
         torch.use_deterministic_algorithms(self.previous_mode)
+
+
+def encode_dtype(x: Tensor) -> int:
+    if x.dtype == torch.float16:
+        return 16
+    if x.dtype == torch.bfloat16:
+        return 17
+    if x.dtype == torch.float32:
+        return 32
+    raise ValueError(x.dtype)

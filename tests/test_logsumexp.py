@@ -1,43 +1,56 @@
-
-import sys
-import os.path as osp
-sys.path.append(osp.dirname(osp.dirname(__file__)))
-
 import torch
-import math
 from einops import repeat
+import math
 
-from src.wrapper import lse_func
-from tests.utils import generate_test_data, generate_attention_mask, compare_tensors
+from src.forward.caller import _flash_attn_forward
+from tests.utils import generate_test_data, generate_attention_mask, compare_tensors, generate_dropout_seed_and_mask
 
 batch_size = 1
-num_heads = 3
+nheads_q = 1
+nheads_kv = 1
+head_dim = 32
 
 seqlen_q = 256
-seqlen_k = 108
+seqlen_k = 256
 swap_seqlens = False
+
 use_attention = False
-
-head_dim = 32
+use_bias = False
+dropout_p = 0.17
 causal = True
-dtype = torch.float16
 
-forward_only = False
+dtype = torch.float16
 
 
 if __name__ == "__main__":
-    
+    raise NotImplementedError()
+
     # Prepare data
-    q, k, v, _ = generate_test_data(batch_size, num_heads, seqlen_q, seqlen_k, head_dim, dtype)
+    q, k, v, do = generate_test_data(batch_size, nheads_q, nheads_kv, seqlen_q, seqlen_k, head_dim, dtype)
     attn_mask = generate_attention_mask(q) if use_attention else None
-    # Compute reference
+    attn_bias = torch.rand(size=(1, 1, seqlen_q, seqlen_k), dtype=dtype, device="cuda") if use_bias else None
+    dropout_seed, dropout_mask = generate_dropout_seed_and_mask(dropout_p, q, k, attn_mask)
+
+    # Compute the LSE
+    lse = _flash_attn_forward(
+        q=q,
+        k=k,
+        v=v,
+        attention_mask=attn_mask,
+        bias=attn_bias,
+        dropout_p=dropout_p,
+        causal=causal,
+        softmax_scale=None,
+        dropout_seed=dropout_seed,
+    )[1]
+
+    # Compute the reference LSE
     q, k, v = q.half(), k.half(), v.half()
     seqlen_q, seqlen_k = q.shape[1], k.shape[1]
     k = repeat(k, "b s h d -> b s (h g) d", g=q.shape[2] // k.shape[2])
     v = repeat(v, "b s h d -> b s (h g) d", g=q.shape[2] // v.shape[2])
     d = q.shape[-1]
     scores = torch.einsum("bthd,bshd->bhts", q, k / math.sqrt(d)).float()
-
     if causal:
         # Create causal mask
         causal_mask = torch.tril(torch.ones(size=(seqlen_q, seqlen_k))).bool().cuda()
@@ -52,6 +65,7 @@ if __name__ == "__main__":
         # Compute lse
         p = torch.where(causal_mask, scores, float("-inf")).softmax(dim=-1)
         log_p = torch.where(causal_mask, p.log(), 0)
+
         lse_ref = (torch.where(causal_mask, scores, 0) - log_p).sum(-1) / causal_mask.sum(-1)
     else:
         p = scores.softmax(dim=-1)
